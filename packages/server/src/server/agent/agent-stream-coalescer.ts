@@ -246,6 +246,13 @@ export class AgentStreamCoalescer {
         previous.turnId === entry.turnId
       ) {
         previous.text += entry.text;
+        if (
+          previous.item.type === "assistant_message" &&
+          entry.item.type === "assistant_message" &&
+          entry.item.waitingOn !== undefined
+        ) {
+          previous.item = { ...previous.item, waitingOn: entry.item.waitingOn };
+        }
         continue;
       }
 

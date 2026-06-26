@@ -59,6 +59,7 @@ import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { isSystemInjectedEnvelope } from "./agent-prompt.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
+import { parseWaitingOnMarker } from "./waiting-on-marker.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -277,6 +278,7 @@ interface ManagedAgentBase {
   lastUsage?: AgentUsage;
   lastError?: string;
   attention: AttentionState;
+  waitingOn?: string[];
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
   finalizedForegroundTurnIds: Set<string>;
   unsubscribeSession: (() => void) | null;
@@ -992,6 +994,7 @@ export class AgentManager {
     const preservedLastUsage = existing.lastUsage;
     const preservedLastError = existing.lastError;
     const preservedAttention = existing.attention;
+    const preservedWaitingOn = existing.waitingOn;
     const handle = existing.persistence;
     const provider = handle?.provider ?? existing.provider;
     const client = this.requireClient(provider);
@@ -1036,6 +1039,7 @@ export class AgentManager {
       lastUsage: preservedLastUsage,
       lastError: preservedLastError,
       attention: preservedAttention,
+      waitingOn: preservedWaitingOn,
     });
   }
 
@@ -1237,6 +1241,7 @@ export class AgentManager {
         lastUsage: undefined,
         lastError: record.lastError ?? undefined,
         attention: { requiresAttention: false },
+        waitingOn: record.waitingOn ?? [],
         internal: record.internal,
         labels: record.labels,
       },
@@ -2342,6 +2347,7 @@ export class AgentManager {
       lastUsage?: AgentUsage;
       lastError?: string;
       attention?: AttentionState;
+      waitingOn?: string[];
       initialTitle?: string | null;
       publishWhenReady?: boolean;
       workspaceId?: string;
@@ -2443,6 +2449,7 @@ export class AgentManager {
           lastUsage?: AgentUsage;
           lastError?: string;
           attention?: AttentionState;
+          waitingOn?: string[];
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
         }
@@ -2480,6 +2487,7 @@ export class AgentManager {
       lastUsage: options?.lastUsage,
       lastError: options?.lastError,
       attention: resolveInitialAttention(options?.attention),
+      waitingOn: options?.waitingOn ?? [],
       internal: config.internal ?? false,
       labels: options?.labels ?? {},
     } as ActiveManagedAgent;
@@ -2816,12 +2824,13 @@ export class AgentManager {
     event: AgentStreamEvent,
     options?: HandleStreamEventOptions,
   ): Promise<boolean> {
-    const eventTurnId = getAgentStreamEventTurnId(event);
+    let currentEvent = event;
+    const eventTurnId = getAgentStreamEventTurnId(currentEvent);
     const isForegroundEvent = Boolean(eventTurnId && agent.activeForegroundTurnId === eventTurnId);
-    this.traceHandleStreamEventStart(agent, event, eventTurnId, isForegroundEvent);
+    this.traceHandleStreamEventStart(agent, currentEvent, eventTurnId, isForegroundEvent);
     if (
       eventTurnId &&
-      isTurnTerminalEvent(event) &&
+      isTurnTerminalEvent(currentEvent) &&
       this.foregroundRuns.hasFinalizedTurn(agent, eventTurnId)
     ) {
       return false;
@@ -2830,18 +2839,21 @@ export class AgentManager {
     // Only update timestamp for live events, not history replay
     if (!options?.fromHistory) {
       this.touchUpdatedAt(agent);
-      if (this.agentStreamCoalescer.handle(agent.id, event)) {
-        this.traceCoalescerBuffered(agent, event, eventTurnId);
+      currentEvent = this.applyWaitingOnMarkerToEvent(agent, currentEvent, { updateState: true });
+      if (this.agentStreamCoalescer.handle(agent.id, currentEvent)) {
+        this.traceCoalescerBuffered(agent, currentEvent, eventTurnId);
         return false;
       }
       this.agentStreamCoalescer.flushFor(agent.id);
+    } else {
+      currentEvent = this.applyWaitingOnMarkerToEvent(agent, currentEvent, { updateState: false });
     }
 
     const flags: StreamEventFlags = { shouldDispatchEvent: true, shouldNotifyWaiters: true };
 
     const dispatchPromise = this.dispatchStreamEventByType({
       agent,
-      event,
+      event: currentEvent,
       options,
       isForegroundEvent,
       eventTurnId,
@@ -2851,17 +2863,56 @@ export class AgentManager {
       await dispatchPromise;
     }
 
-    if (!options?.fromHistory && isForegroundEvent && isTurnTerminalEvent(event)) {
+    if (!options?.fromHistory && isForegroundEvent && isTurnTerminalEvent(currentEvent)) {
       this.finalizeForegroundTurn(agent, eventTurnId);
     }
 
     if (!options?.fromHistory && flags.shouldDispatchEvent) {
-      this.dispatchStream(agent.id, event, { timestamp: new Date().toISOString() });
+      this.dispatchStream(agent.id, currentEvent, { timestamp: new Date().toISOString() });
     }
 
-    this.traceHandleStreamEventEnd(agent, event, eventTurnId, flags);
+    this.traceHandleStreamEventEnd(agent, currentEvent, eventTurnId, flags);
 
     return flags.shouldNotifyWaiters;
+  }
+
+  private applyWaitingOnMarkerToEvent(
+    agent: ActiveManagedAgent,
+    event: AgentStreamEvent,
+    options: { updateState: boolean },
+  ): AgentStreamEvent {
+    if (event.type !== "timeline" || event.item.type !== "assistant_message") {
+      return event;
+    }
+    const parsed = parseWaitingOnMarker(event.item.text);
+    if (!parsed.found) {
+      return event;
+    }
+    const waitingOn = parsed.waitingOn ?? [];
+    if (options.updateState && this.setAgentWaitingOn(agent, waitingOn)) {
+      this.emitState(agent);
+    }
+    return {
+      ...event,
+      waitingOn,
+      item: {
+        ...event.item,
+        waitingOn,
+      },
+    };
+  }
+
+  private setAgentWaitingOn(agent: ActiveManagedAgent, waitingOn: readonly string[]): boolean {
+    const previous = agent.waitingOn ?? [];
+    if (
+      previous.length === waitingOn.length &&
+      previous.every((value, i) => value === waitingOn[i])
+    ) {
+      return false;
+    }
+    agent.waitingOn = [...waitingOn];
+    this.touchUpdatedAt(agent);
+    return true;
   }
 
   private traceHandleStreamEventStart(
@@ -3166,8 +3217,12 @@ export class AgentManager {
       },
       "agent.manager.turn.started",
     );
+    let stateChanged = this.setAgentWaitingOn(agent, []);
     if (!isForegroundEvent) {
       agent.lifecycle = "running";
+      stateChanged = true;
+    }
+    if (stateChanged) {
       this.emitState(agent);
     }
   }
@@ -3226,11 +3281,13 @@ export class AgentManager {
     turnId?: string,
   ): AgentStreamEvent {
     const row = this.recordTimeline(agentId, item);
+    const waitingOn = item.type === "assistant_message" ? item.waitingOn : undefined;
     const event: AgentStreamEvent = {
       type: "timeline",
       item,
       provider,
       ...(turnId !== undefined ? { turnId } : {}),
+      ...(waitingOn !== undefined ? { waitingOn } : {}),
     };
     this.dispatchStream(agentId, event, {
       seq: row.seq,

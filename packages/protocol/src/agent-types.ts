@@ -332,7 +332,7 @@ export interface CompactionTimelineItem {
 
 export type AgentTimelineItem =
   | { type: "user_message"; text: string; messageId?: string }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | { type: "assistant_message"; text: string; messageId?: string; waitingOn?: string[] }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: { text: string; completed: boolean }[] }
@@ -371,6 +371,7 @@ export type AgentStreamEvent =
       provider: AgentProvider;
       turnId?: string;
       timestamp?: string;
+      waitingOn?: string[];
     }
   | {
       type: "permission_requested";

@@ -62,6 +62,7 @@ const STORED_AGENT_SCHEMA = z.object({
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
+  waitingOn: z.array(z.string()).optional(),
   internal: z.boolean().optional(),
   archivedAt: z.string().nullable().optional(),
 });

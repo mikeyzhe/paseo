@@ -92,6 +92,7 @@ export function toStoredAgentRecord(
     attentionTimestamp: agent.attention.requiresAttention
       ? agent.attention.attentionTimestamp.toISOString()
       : null,
+    waitingOn: agent.waitingOn ?? [],
     internal: options?.internal,
   } satisfies StoredAgentRecord;
 }
@@ -141,6 +142,7 @@ export function toAgentPayload(
 
   // Handle attention state
   payload.requiresAttention = agent.attention.requiresAttention;
+  payload.waitingOn = agent.waitingOn ?? [];
   if (agent.attention.requiresAttention) {
     payload.attentionReason = agent.attention.attentionReason;
     payload.attentionTimestamp = agent.attention.attentionTimestamp.toISOString();
@@ -233,6 +235,7 @@ export function buildStoredAgentPayload(
     requiresAttention: record.requiresAttention ?? false,
     attentionReason: record.attentionReason ?? null,
     attentionTimestamp: record.attentionTimestamp ?? null,
+    waitingOn: record.waitingOn ?? [],
     archivedAt: record.archivedAt ?? null,
     labels: normalizeLabels(record.labels),
     ...(providerAvailable ? {} : { providerUnavailable: true }),
@@ -257,6 +260,7 @@ export function toAgentListItemPayload(agent: AgentSnapshotPayload): AgentListIt
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp ?? null,
+    waitingOn: agent.waitingOn ?? [],
     labels: agent.labels,
     ...(agent.providerUnavailable ? { providerUnavailable: true } : {}),
   };

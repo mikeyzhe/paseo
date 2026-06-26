@@ -554,6 +554,7 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, z.ZodT
       type: z.literal("assistant_message"),
       text: z.string(),
       messageId: z.string().optional(),
+      waitingOn: z.array(z.string()).optional(),
     }),
     z.object({
       type: z.literal("reasoning"),
@@ -612,6 +613,7 @@ export const AgentStreamEventPayloadSchema = z.discriminatedUnion("type", [
     type: z.literal("timeline"),
     provider: AgentProviderSchema,
     item: AgentTimelineItemPayloadSchema,
+    waitingOn: z.array(z.string()).optional(),
   }),
   z.object({
     type: z.literal("permission_requested"),
@@ -685,6 +687,7 @@ export const AgentSnapshotPayloadSchema = z.object({
   lastError: z.string().optional(),
   title: z.string().nullable(),
   labels: z.record(z.string(), z.string()).default({}),
+  waitingOn: z.array(z.string()).optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
@@ -712,6 +715,7 @@ export const AgentListItemPayloadSchema = z.object({
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
   labels: z.record(z.string(), z.string()).default({}),
+  waitingOn: z.array(z.string()).optional(),
   providerUnavailable: z.boolean().optional(),
 });
 
