@@ -1680,6 +1680,135 @@ describe("ClaudeAgentSession context window usage", () => {
     }
   });
 
+  test("/clear starts a fresh Claude session and resets context usage", async () => {
+    const queryFactory = createQueryFactoryForTurns([
+      [
+        {
+          type: "system",
+          subtype: "init",
+          session_id: "session-before-clear",
+          permissionMode: "default",
+          model: "claude-sonnet-4-6",
+        },
+        {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "task-before-clear",
+          description: "Processing",
+          usage: {
+            total_tokens: 190_000,
+            tool_uses: 1,
+            duration_ms: 50,
+            input_tokens: 180_000,
+            cache_read_input_tokens: 10_000,
+          },
+          uuid: "task-progress-before-clear",
+          session_id: "session-before-clear",
+        },
+        {
+          type: "result",
+          subtype: "success",
+          duration_ms: 100,
+          duration_api_ms: 75,
+          is_error: false,
+          num_turns: 1,
+          result: "done",
+          stop_reason: null,
+          total_cost_usd: 0.25,
+          usage: {
+            input_tokens: 180_000,
+            cache_read_input_tokens: 10_000,
+            output_tokens: 1_000,
+          },
+          modelUsage: {
+            "claude-sonnet-4-6": { contextWindow: 200_000 },
+          },
+          permission_denials: [],
+          uuid: "result-before-clear",
+          session_id: "session-before-clear",
+        },
+      ],
+      [
+        {
+          type: "result",
+          subtype: "success",
+          duration_ms: 10,
+          duration_api_ms: 8,
+          is_error: false,
+          num_turns: 1,
+          result: "cleared",
+          stop_reason: null,
+          total_cost_usd: 0,
+          usage: {
+            input_tokens: 180_001,
+            cache_read_input_tokens: 10_000,
+            output_tokens: 1_001,
+          },
+          modelUsage: {
+            "claude-sonnet-4-6": { contextWindow: 200_000 },
+          },
+          permission_denials: [],
+          uuid: "result-clear-forwarded",
+          session_id: "session-before-clear",
+        },
+      ],
+    ]);
+    const client = new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    });
+    const session = await client.createSession({
+      provider: "claude",
+      cwd: process.cwd(),
+    });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    try {
+      await session.run("turn before clear");
+      const clearEventStart = events.length;
+      const clearResult = await session.run("/clear");
+      const clearEvents = events.slice(clearEventStart);
+      const freshThread = clearEvents.find(
+        (event): event is Extract<AgentStreamEvent, { type: "thread_started" }> =>
+          event.type === "thread_started",
+      );
+
+      expect(freshThread?.sessionId).toEqual(expect.any(String));
+      expect(freshThread?.sessionId).not.toBe("session-before-clear");
+      expect(clearEvents).toContainEqual(
+        expect.objectContaining({
+          type: "usage_updated",
+          provider: "claude",
+          usage: {
+            contextWindowUsedTokens: 0,
+            contextWindowMaxTokens: 200_000,
+          },
+        }),
+      );
+      expect(clearResult.usage).toMatchObject({
+        contextWindowUsedTokens: 0,
+        contextWindowMaxTokens: 200_000,
+      });
+
+      await (
+        session as unknown as {
+          ensureQuery(): Promise<unknown>;
+        }
+      ).ensureQuery();
+
+      expect(queryFactory).toHaveBeenCalledTimes(2);
+      expect(queryFactory.mock.calls[1]?.[0].options).toMatchObject({
+        sessionId: freshThread?.sessionId,
+      });
+      expect(queryFactory.mock.calls[1]?.[0].options.resume).toBeUndefined();
+    } finally {
+      unsubscribe();
+      await session.close();
+    }
+  });
+
   test("convertUsage derives used tokens from result usage as fallback when task_progress is missing", async () => {
     const session = await createSessionForTest();
 
