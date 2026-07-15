@@ -309,6 +309,7 @@ const DEFAULT_MODES: AgentMode[] = [
 
 const VALID_CLAUDE_MODES = new Set(DEFAULT_MODES.map((mode) => mode.id));
 
+const CLEAR_COMMAND_NAME = "clear";
 const REWIND_COMMAND_NAME = "rewind";
 const REWIND_COMMAND: AgentSlashCommand = {
   name: REWIND_COMMAND_NAME,
@@ -1744,6 +1745,16 @@ class ClaudeContextUsageState {
     this.compactedContextWindowUsedTokens = undefined;
   }
 
+  resetForFreshSession(): AgentUsage {
+    this.beginTurn();
+    this.completedResultTurns = 0;
+    const usage: AgentUsage = { contextWindowUsedTokens: 0 };
+    if (this.contextWindowMaxTokens !== undefined) {
+      usage.contextWindowMaxTokens = this.contextWindowMaxTokens;
+    }
+    return usage;
+  }
+
   setInitialContextWindowMaxTokens(contextWindowMaxTokens: number | undefined): void {
     this.contextWindowMaxTokens = contextWindowMaxTokens;
   }
@@ -2031,6 +2042,13 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     const slashCommand = this.resolveSlashCommandInvocation(prompt);
+    if (slashCommand?.commandName === CLEAR_COMMAND_NAME) {
+      const turnId = this.createTurnId("foreground");
+      this.activeForegroundTurnId = turnId;
+      this.transitionTurnState("foreground", "clear command");
+      this.executeClearTurn();
+      return { turnId };
+    }
     if (slashCommand?.commandName === REWIND_COMMAND_NAME) {
       const turnId = this.createTurnId("foreground");
       this.activeForegroundTurnId = turnId;
@@ -2464,7 +2482,9 @@ class ClaudeAgentSession implements AgentSession {
     if (!parsed) {
       return null;
     }
-    return parsed.commandName === REWIND_COMMAND_NAME ? parsed : null;
+    return parsed.commandName === CLEAR_COMMAND_NAME || parsed.commandName === REWIND_COMMAND_NAME
+      ? parsed
+      : null;
   }
 
   private parseSlashCommandInput(text: string): SlashCommandInvocation | null {
@@ -2645,7 +2665,7 @@ class ClaudeAgentSession implements AgentSession {
     }
   }
 
-  private startFreshConversationSession(): void {
+  private startFreshConversationSession(): AgentUsage {
     const sessionId = randomUUID();
     this.claudeSessionId = sessionId;
     this.pendingFreshSessionId = sessionId;
@@ -2658,6 +2678,7 @@ class ClaudeAgentSession implements AgentSession {
     this.userMessageIds = [];
     this.emittedUserMessageIds.clear();
     this.rewindTurnAnchors.length = 0;
+    return this.contextUsage.resetForFreshSession();
   }
 
   private rememberUserMessageId(messageId: string | null | undefined): void {
@@ -3197,6 +3218,28 @@ class ClaudeAgentSession implements AgentSession {
         error: error instanceof Error ? error.message : "Failed to rewind tracked files",
       });
     }
+  }
+
+  private executeClearTurn(): void {
+    this.notifySubscribers({ type: "turn_started", provider: "claude" });
+    const usage = this.startFreshConversationSession();
+    const sessionId = this.claudeSessionId;
+    if (!sessionId) {
+      this.finishForegroundTurn({
+        type: "turn_failed",
+        provider: "claude",
+        error: "Failed to start a fresh Claude session",
+      });
+      return;
+    }
+
+    this.notifySubscribers({
+      type: "thread_started",
+      provider: "claude",
+      sessionId,
+    });
+    this.notifySubscribers({ type: "usage_updated", provider: "claude", usage });
+    this.finishForegroundTurn({ type: "turn_completed", provider: "claude", usage });
   }
 
   private shouldRecoverInterruptedQueryAbort(
