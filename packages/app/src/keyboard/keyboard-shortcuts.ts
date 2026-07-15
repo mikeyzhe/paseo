@@ -120,8 +120,8 @@ const SHORTCUT_HELP_SECTION_LABEL_KEYS: Record<ShortcutSectionId, string> = {
 
 const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "new-agent": "settings.shortcuts.help.openProject",
-  "new-worktree": "settings.shortcuts.help.newWorktree",
-  "archive-worktree": "settings.shortcuts.help.archiveWorktree",
+  "new-workspace": "settings.shortcuts.help.newWorkspace",
+  "archive-workspace": "settings.shortcuts.help.archiveWorkspace",
   "workspace-tab-new": "settings.shortcuts.help.newTab",
   "workspace-tab-close-current": "settings.shortcuts.help.closeCurrentTab",
   "workspace-jump-index": "settings.shortcuts.help.jumpToWorkspace",
@@ -151,6 +151,7 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "toggle-focus": "settings.shortcuts.help.toggleFocusMode",
   "cycle-theme": "settings.shortcuts.help.cycleTheme",
   "focus-message-input": "settings.shortcuts.help.focusMessageInput",
+  "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
   "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
   "agent-interrupt": "settings.shortcuts.help.interruptAgent",
@@ -164,81 +165,115 @@ const SHORTCUT_HELP_NOTE_KEYS: Record<string, string> = {
 // --- Binding definitions ---
 
 const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
-  // --- New agent ---
+  // --- Open project ---
+  // Open project moved from Cmd+Shift+O to Cmd+O. The binding ids intentionally
+  // keep their original "cmd-shift-o" / "ctrl-shift-o" names: user shortcut
+  // overrides are keyed by binding id, so renaming them would silently drop a
+  // user's customized Open project shortcut on upgrade.
   {
     id: "agent-new-cmd-shift-o-mac",
     action: "agent.new",
-    combo: "Cmd+Shift+O",
+    combo: "Cmd+O",
     when: { mac: true },
     help: {
       id: "new-agent",
       section: "projects",
       label: "Open project",
-      keys: ["mod", "shift", "O"],
+      keys: ["mod", "O"],
     },
   },
   {
     id: "agent-new-ctrl-shift-o-non-mac",
     action: "agent.new",
-    combo: "Ctrl+Shift+O",
+    combo: "Ctrl+O",
     when: { mac: false, terminal: false },
     help: {
       id: "new-agent",
       section: "projects",
       label: "Open project",
-      keys: ["mod", "shift", "O"],
+      keys: ["mod", "O"],
     },
   },
 
-  // --- New worktree ---
+  // --- New workspace ---
   {
-    id: "worktree-new-cmd-o-mac",
-    action: "worktree.new",
-    combo: "Cmd+O",
+    id: "workspace-new-cmd-n-mac",
+    action: "workspace.new",
+    combo: "Cmd+N",
     when: { mac: true, commandCenter: false },
     help: {
-      id: "new-worktree",
+      id: "new-workspace",
       section: "projects",
-      label: "New worktree",
-      keys: ["mod", "O"],
+      label: "New workspace",
+      keys: ["mod", "N"],
     },
   },
   {
-    id: "worktree-new-ctrl-o-non-mac",
-    action: "worktree.new",
-    combo: "Ctrl+O",
+    id: "workspace-new-ctrl-n-non-mac",
+    action: "workspace.new",
+    combo: "Ctrl+N",
     when: { mac: false, commandCenter: false, terminal: false },
     help: {
-      id: "new-worktree",
+      id: "new-workspace",
       section: "projects",
-      label: "New worktree",
-      keys: ["mod", "O"],
+      label: "New workspace",
+      keys: ["mod", "N"],
     },
   },
 
-  // --- Archive worktree ---
+  // --- Archive workspace ---
   {
+    // COMPAT(workspaceArchiveShortcutOverride): added in v0.1.106; remove after
+    // 2027-01-11 with a stored-override migration. Keeps existing custom chords.
     id: "worktree-archive-cmd-shift-backspace-mac",
-    action: "worktree.archive",
+    action: "workspace.archive",
     combo: "Cmd+Shift+Backspace",
     when: { mac: true, commandCenter: false },
     help: {
-      id: "archive-worktree",
+      id: "archive-workspace",
       section: "projects",
-      label: "Archive worktree",
+      label: "Archive workspace",
       keys: ["mod", "shift", "Backspace"],
     },
   },
   {
+    // COMPAT(workspaceArchiveShortcutOverride): added in v0.1.106; remove after
+    // 2027-01-11 with a stored-override migration. Keeps existing custom chords.
     id: "worktree-archive-ctrl-shift-backspace-non-mac",
-    action: "worktree.archive",
+    action: "workspace.archive",
     combo: "Ctrl+Shift+Backspace",
     when: { mac: false, commandCenter: false, terminal: false },
     help: {
-      id: "archive-worktree",
+      id: "archive-workspace",
       section: "projects",
-      label: "Archive worktree",
+      label: "Archive workspace",
       keys: ["mod", "shift", "Backspace"],
+    },
+  },
+
+  // --- Pin workspace ---
+  {
+    id: "workspace-pin-cmd-shift-p-mac",
+    action: "workspace.pin",
+    combo: "Cmd+Shift+P",
+    when: { mac: true, commandCenter: false },
+    help: {
+      id: "pin-workspace",
+      section: "projects",
+      label: "Pin chat",
+      keys: ["mod", "shift", "P"],
+    },
+  },
+  {
+    id: "workspace-pin-ctrl-shift-p-non-mac",
+    action: "workspace.pin",
+    combo: "Ctrl+Shift+P",
+    when: { mac: false, commandCenter: false, terminal: false },
+    help: {
+      id: "pin-workspace",
+      section: "projects",
+      label: "Pin chat",
+      keys: ["mod", "shift", "P"],
     },
   },
 
@@ -884,6 +919,20 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
   {
+    id: "message-input-mode-cycle-shift-tab",
+    action: "message-input.action",
+    combo: "Shift+Tab",
+    repeat: false,
+    when: { commandCenter: false, focusScope: "message-input" },
+    payload: { type: "message-input", kind: "mode-cycle" },
+    help: {
+      id: "cycle-agent-mode",
+      section: "agent-input",
+      label: "Cycle agent mode",
+      keys: ["shift", "Tab"],
+    },
+  },
+  {
     id: "message-input-voice-toggle-cmd-shift-d-mac",
     action: "message-input.action",
     combo: "Cmd+Shift+D",
@@ -1315,6 +1364,21 @@ export function getDefaultKeysForAction(
     return binding.help.keys;
   }
   return null;
+}
+
+/**
+ * The `KeyboardEvent.key` whose hold reveals the sidebar workspace-jump number
+ * badges. It must match the modifier of the active `workspace.navigate.index`
+ * binding for this runtime, otherwise the badges appear for a modifier that
+ * does not actually jump: Alt on web, Cmd (Meta) on desktop Mac, Ctrl on
+ * desktop non-Mac.
+ */
+export function getWorkspaceIndexJumpModifierKey(platform: {
+  isMac: boolean;
+  isDesktop: boolean;
+}): "Alt" | "Meta" | "Control" {
+  if (!platform.isDesktop) return "Alt";
+  return platform.isMac ? "Meta" : "Control";
 }
 
 export function buildKeyboardShortcutHelpSections(

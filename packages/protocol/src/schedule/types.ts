@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentProviderSchema } from "@getpaseo/protocol/provider-manifest";
+import { AgentProviderSchema } from "../provider-manifest.js";
 
 export const ScheduleStatusSchema = z.enum(["active", "paused", "completed"]);
 export type ScheduleStatus = z.infer<typeof ScheduleStatusSchema>;
@@ -20,7 +20,7 @@ export type ScheduleCadence = z.infer<typeof ScheduleCadenceSchema>;
 export const ScheduleTargetSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("agent"),
-    agentId: z.string().uuid(),
+    agentId: z.guid(),
   }),
   z.object({
     type: z.literal("new-agent"),
@@ -30,21 +30,23 @@ export const ScheduleTargetSchema = z.discriminatedUnion("type", [
       modeId: z.string().trim().min(1).optional(),
       model: z.string().trim().min(1).optional(),
       thinkingOptionId: z.string().trim().min(1).optional(),
+      archiveOnFinish: z.boolean().optional(),
+      isolation: z.enum(["local", "worktree"]).optional(),
       title: z.string().trim().min(1).nullable().optional(),
       approvalPolicy: z.string().trim().min(1).optional(),
       sandboxMode: z.string().trim().min(1).optional(),
       networkAccess: z.boolean().optional(),
       webSearch: z.boolean().optional(),
-      featureValues: z.record(z.unknown()).optional(),
+      featureValues: z.record(z.string(), z.unknown()).optional(),
       extra: z
         .object({
-          codex: z.record(z.unknown()).optional(),
-          claude: z.record(z.unknown()).optional(),
+          codex: z.record(z.string(), z.unknown()).optional(),
+          claude: z.record(z.string(), z.unknown()).optional(),
         })
         .partial()
         .optional(),
       systemPrompt: z.string().optional(),
-      mcpServers: z.record(z.unknown()).optional(),
+      mcpServers: z.record(z.string(), z.unknown()).optional(),
     }),
   }),
 ]);
@@ -56,7 +58,8 @@ export const ScheduleRunSchema = z.object({
   startedAt: z.string(),
   endedAt: z.string().nullable(),
   status: z.enum(["running", "succeeded", "failed"]),
-  agentId: z.string().uuid().nullable(),
+  agentId: z.guid().nullable(),
+  workspaceId: z.string().nullable().optional(),
   output: z.string().nullable(),
   error: z.string().nullable(),
 });
@@ -99,6 +102,9 @@ export interface UpdateScheduleNewAgentConfig {
   provider?: string;
   model?: string | null;
   modeId?: string | null;
+  thinkingOptionId?: string | null;
+  archiveOnFinish?: boolean;
+  isolation?: "local" | "worktree";
   cwd?: string;
 }
 

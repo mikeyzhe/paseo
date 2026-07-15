@@ -49,6 +49,12 @@ PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived wor
 
 In Paseo-managed worktree services, use the injected service environment rather than hardcoded root checkout ports.
 
+### Expo Router
+
+Route ownership, startup restore, and native blank-screen gotchas live in
+[expo-router.md](expo-router.md). Read it before changing `packages/app/src/app`,
+startup routing, remembered workspace restore, or active workspace selection.
+
 ### iOS simulator preview service
 
 Paseo worktrees expose the native iOS dev app through the `ios-simulator` service in `paseo.json`. The service URL serves the simulator preview at `/.sim`, so the preview link is `${PASEO_URL}/.sim`.
@@ -65,6 +71,21 @@ Starting the service must not create, focus, reveal, or leave behind macOS Simul
 `http://127.0.0.1:9223` so renderer CPU profiles can be captured through CDP.
 It launches its own Electron-flavored Expo server and passes that URL to Electron.
 Override the CDP port with `PASEO_ELECTRON_REMOTE_DEBUGGING_PORT` when `9223` is busy.
+
+With desktop dev running, verify the real BrowserWindow, titlebar clearance, fullscreen
+transition, and 751-pixel settings split with:
+
+```bash
+npm run verify:electron-cdp --workspace=@getpaseo/desktop
+```
+
+The verifier reads the same `EXPO_PORT` and
+`PASEO_ELECTRON_REMOTE_DEBUGGING_PORT` environment names as desktop dev. Set both when
+testing an isolated instance on non-default ports.
+
+When running a dedicated Electron QA instance against a non-default Expo port, set
+`EXPO_DEV_URL` explicitly. Desktop main defaults to `http://localhost:8081`, so
+`PASEO_PORT=57928` alone starts Metro on 57928 but Electron still loads 8081.
 
 ### React render profiling
 
@@ -163,10 +184,32 @@ The supervisor rotates `daemon.log`. Persisted `log.file.rotate` settings in
 `PASEO_LOG_ROTATE_SIZE` and `PASEO_LOG_ROTATE_COUNT` env vars override the
 defaults. The default rotation is `10m` x `3` files everywhere.
 
+### Agent Tool Catalog Measurement
+
+Measure the MCP `tools/list` payload that Paseo injects into agents with:
+
+```bash
+npm run measure:agent-tools --workspace=@getpaseo/server
+```
+
+The command reports compact JSON bytes, estimated tokens, field totals, largest
+tools, and the browser-tools delta. It defaults to the agent-scoped catalog; use
+`-- --scope=top-level` for the unaffiliated `/mcp/agents` shape and `-- --json`
+for machine-readable output.
+
 ## paseo.json service scripts
 
 `worktree.setup` and `worktree.teardown` accept either a multiline shell script or an array
 of commands. Both run sequentially.
+
+Lifecycle commands run in the worktree through a stable script shell: `bash`
+resolved from `PATH` on macOS/Linux, and PowerShell with `-NoProfile` on
+Windows. They inherit the daemon environment plus Paseo's lifecycle variables;
+login and interactive shell startup files are not loaded, and Bash's `BASH_ENV`
+hook is unset. Daemon-run loop verify checks and ACP single-string terminal
+commands use the same non-login Bash behavior on macOS/Linux, but preserve their
+existing `cmd.exe /c` string semantics on Windows. Service scripts are separate:
+they launch in a terminal and receive the service environment described below.
 
 ```json
 {
@@ -204,6 +247,56 @@ Service proxy hostnames use the double-dash shape: `web--feature-auth--project.l
 }
 ```
 
+## Bundled daemon web UI
+
+> The user-facing guide for this feature (enabling it, reverse proxy, TLS, tunnels, security) lives at [public-docs/web-ui.md](../public-docs/web-ui.md). This section is the contributor/build reference: how the artifact is produced, bundled, and excluded from desktop packaging.
+
+The daemon can optionally serve the browser web client from the same HTTP server. This is disabled by default.
+
+Enable it for a running daemon with:
+
+```bash
+paseo daemon start --web-ui
+```
+
+Or set the environment variable:
+
+```bash
+PASEO_WEB_UI_ENABLED=true paseo daemon start
+```
+
+Or persist it in `config.json`:
+
+```json
+{
+  "features": {
+    "webUi": {
+      "enabled": true
+    }
+  }
+}
+```
+
+When enabled, opening the daemon HTTP origin (for example `http://localhost:6767/`) serves the web app. The same HTTP server continues to serve `/api/*`, `/mcp/*`, `/public/*`, the WebSocket upgrade, and service-proxy routes. Static files load without daemon bearer auth; API and WebSocket calls still enforce auth.
+
+The served app auto-bootstraps a connection to the same origin, so opening `http://localhost:6767/` directly usually skips the Add Host step.
+
+Build the artifact for packaging or measurement with:
+
+```bash
+npm run build:daemon-web-ui
+```
+
+This exports the normal browser web app (not the Electron-flavored desktop renderer) and copies it into `packages/server/dist/server/web-ui`, precompressing `.html`, `.js`, `.css`, and JSON assets as `.br` and `.gz`.
+
+Measured bundle size for a standard Expo web export:
+
+- raw: 10.77 MiB
+- gzip: 2.55 MiB
+- brotli: 1.93 MiB
+
+The desktop-managed daemon disables the bundled web UI by default (`PASEO_WEB_UI_ENABLED=false`) because the desktop app already ships the renderer as `app-dist`. Shipping the same assets again inside `@getpaseo/server` would duplicate the ~10.8 MiB install. Desktop packaging also excludes `node_modules/@getpaseo/server/dist/server/web-ui/**` from the packaged app.
+
 ## Built workspace packages
 
 Package imports resolve through package exports to compiled `dist/` output, not sibling `src/` files. This is true in local dev and in published packages: the app, daemon, CLI, and SDK consumers should all exercise the same runtime paths.
@@ -220,6 +313,8 @@ npm run build:app-deps     # highlight -> protocol -> client -> expo-two-way-aud
 ```
 
 Use `npm run build:server` whenever you have changed any daemon/server-facing package and need clean cross-package types or runtime behavior.
+
+The app Metro config disables Watchman and uses Metro's node crawler for exports. Keep that invariant unless you have verified production app exports on machines with and without Watchman installed; distro Watchman builds can differ in capabilities and change Metro's crawl behavior.
 
 For tighter loops, you can rebuild a single workspace:
 
@@ -254,6 +349,7 @@ npm run cli -- ls -a -g --json       # Same, as JSON
 npm run cli -- inspect <id>          # Show detailed agent info
 npm run cli -- logs <id>             # View agent timeline
 npm run cli -- daemon status         # Check daemon status
+npm run cli -- clone owner/repo --dir ~/workspace # Clone GitHub repo and register workspace
 ```
 
 Use `--host <host:port>` to point the CLI at a different daemon:

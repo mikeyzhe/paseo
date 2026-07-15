@@ -1,164 +1,116 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { useSessionStore } from "@/stores/session-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useToast } from "@/contexts/toast-context";
-import { useCheckoutGitActionsStore } from "@/git/actions-store";
-import { confirmRiskyWorktreeArchive } from "@/git/worktree-archive-warning";
+import {
+  confirmRiskyWorktreeArchive,
+  DEFAULT_WORKTREE_ARCHIVE_WARNING_LABELS,
+  type WorktreeArchiveWarningLabels,
+} from "@/git/worktree-archive-warning";
+import type { WorkspaceDescriptor } from "@/stores/session-store";
+import {
+  buildWorkspaceTabPersistenceKey,
+  useWorkspaceLayoutStore,
+} from "@/stores/workspace-layout-store";
+import { useWorkspaceTabsStore } from "@/stores/workspace-tabs-store";
 import { archiveWorkspaceOptimistically } from "@/workspace/workspace-archive";
-import { requireWorkspaceDirectory } from "@/utils/workspace-directory";
-import { normalizeWorkspacePath } from "@/utils/workspace-identity";
-import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 
-// A workspace is the last reference to its backing worktree when no other active
-// workspace on the same host points at the same directory. A directory can back
-// multiple workspaces (Model B), so a sibling reference must keep the worktree on
-// disk even when this workspace is archived. Local checkouts are never worktrees,
-// so they never reach the disk-deletion prompt.
-export function useIsLastWorktreeReference(workspace: SidebarWorkspaceEntry): boolean {
-  return useSessionStore((state) => {
-    if (workspace.workspaceKind !== "worktree") {
-      return false;
-    }
-    const directory = normalizeWorkspacePath(workspace.workspaceDirectory);
-    if (!directory) {
-      return false;
-    }
-    const workspaces = state.sessions[workspace.serverId]?.workspaces;
-    if (!workspaces) {
-      return true;
-    }
-    for (const candidate of workspaces.values()) {
-      if (candidate.id === workspace.workspaceId) {
-        continue;
-      }
-      if (normalizeWorkspacePath(candidate.workspaceDirectory) === directory) {
-        return false;
-      }
-    }
-    return true;
-  });
+function purgeArchivedWorkspaceState(input: { serverId: string; workspaceId: string }): void {
+  const workspaceKey = buildWorkspaceTabPersistenceKey(input);
+  if (workspaceKey) {
+    useWorkspaceLayoutStore.getState().purgeWorkspace(workspaceKey);
+  }
+  useWorkspaceTabsStore.getState().purgeWorkspace(input);
+}
+
+export interface ArchiveWorkspaceInput {
+  serverId: string;
+  workspaceId: string;
+  workspaceKind: WorkspaceDescriptor["workspaceKind"];
+  name: string;
+  isDirty?: boolean | null;
+  aheadOfOrigin?: number | null;
+  diffStat?: { additions: number; deletions: number } | null;
+  warningLabels?: WorktreeArchiveWarningLabels;
+  onArchiveStarted: () => void;
+  onSetHiding?: (hiding: boolean) => void;
 }
 
 export interface WorkspaceArchiveController {
-  // Begins the archive flow. For a last-reference worktree this opens the inline
-  // keep/delete prompt; otherwise it archives the workspace record directly.
-  beginArchive: () => void;
-  // Inline prompt state for the last-reference worktree case.
-  deletePromptOpen: boolean;
-  confirmKeepOnDisk: () => void;
-  confirmDeleteFromDisk: () => void;
-  cancelDeletePrompt: () => void;
+  archive: () => void;
 }
 
-export function useWorkspaceArchive(input: {
-  workspace: SidebarWorkspaceEntry;
-  onArchiveStarted: () => void;
-  onSetHiding?: (hiding: boolean) => void;
-}): WorkspaceArchiveController {
-  const { workspace, onArchiveStarted, onSetHiding } = input;
+export function useWorkspaceArchive(input: ArchiveWorkspaceInput): WorkspaceArchiveController {
+  const {
+    serverId,
+    workspaceId,
+    workspaceKind,
+    name,
+    isDirty,
+    aheadOfOrigin,
+    diffStat,
+    warningLabels = DEFAULT_WORKTREE_ARCHIVE_WARNING_LABELS,
+    onArchiveStarted,
+    onSetHiding,
+  } = input;
   const { t } = useTranslation();
   const toast = useToast();
-  const archiveWorktree = useCheckoutGitActionsStore((state) => state.archiveWorktree);
-  const isLastWorktreeReference = useIsLastWorktreeReference(workspace);
-  const [deletePromptOpen, setDeletePromptOpen] = useState(false);
 
-  const archiveWorktreeRecord = useCallback(
-    (deleteWorktreeFromDisk: boolean) => {
-      let archiveDirectory: string;
-      try {
-        archiveDirectory = requireWorkspaceDirectory({
-          workspaceId: workspace.workspaceId,
-          workspaceDirectory: workspace.workspaceDirectory,
-        });
-      } catch (error) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : t("sidebar.workspace.toasts.workspacePathUnavailable"),
-        );
-        return;
-      }
-      onArchiveStarted();
-      void archiveWorktree({
-        serverId: workspace.serverId,
-        cwd: archiveDirectory,
-        worktreePath: archiveDirectory,
-        workspaceId: workspace.workspaceId,
-        deleteWorktreeFromDisk,
-      }).catch((error) => {
-        toast.error(
-          error instanceof Error ? error.message : t("sidebar.workspace.toasts.archiveFailed"),
-        );
-      });
-    },
-    [archiveWorktree, onArchiveStarted, t, toast, workspace],
-  );
-
-  const archiveNonWorktreeRecord = useCallback(async () => {
-    const client = getHostRuntimeStore().getClient(workspace.serverId);
+  const archiveWorkspaceRecord = useCallback(async () => {
+    const client = getHostRuntimeStore().getClient(serverId);
     if (!client) {
       toast.error(t("sidebar.workspace.toasts.hostDisconnected"));
       return;
     }
     onSetHiding?.(true);
     try {
+      onArchiveStarted();
       await archiveWorkspaceOptimistically({
         client,
-        workspace,
-        afterHide: onArchiveStarted,
+        workspace: {
+          serverId,
+          workspaceId,
+        },
       });
+      purgeArchivedWorkspaceState({ serverId, workspaceId });
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : t("sidebar.workspace.toasts.hideFailed"),
+        error instanceof Error ? error.message : t("sidebar.workspace.toasts.archiveFailed"),
       );
     } finally {
       onSetHiding?.(false);
     }
-  }, [onArchiveStarted, onSetHiding, t, toast, workspace]);
+  }, [onArchiveStarted, onSetHiding, serverId, t, toast, workspaceId]);
 
-  const beginArchive = useCallback(() => {
+  const archive = useCallback(() => {
     void (async () => {
-      if (workspace.workspaceKind === "worktree") {
-        const confirmed = await confirmRiskyWorktreeArchive({
-          worktreeName: workspace.name,
-          isDirty: workspace.archiveHasUncommittedChanges,
-          aheadOfOrigin: workspace.archiveUnpushedCommitCount,
-          diffStat: workspace.diffStat,
-        });
+      if (workspaceKind === "worktree") {
+        const confirmed = await confirmRiskyWorktreeArchive(
+          {
+            workspaceName: name,
+            isDirty,
+            aheadOfOrigin,
+            diffStat,
+          },
+          warningLabels,
+        );
         if (!confirmed) {
           return;
         }
-        if (isLastWorktreeReference) {
-          setDeletePromptOpen(true);
-          return;
-        }
-        archiveWorktreeRecord(false);
-        return;
       }
-      await archiveNonWorktreeRecord();
+      await archiveWorkspaceRecord();
     })();
-  }, [archiveNonWorktreeRecord, archiveWorktreeRecord, isLastWorktreeReference, workspace]);
-
-  const confirmKeepOnDisk = useCallback(() => {
-    setDeletePromptOpen(false);
-    archiveWorktreeRecord(false);
-  }, [archiveWorktreeRecord]);
-
-  const confirmDeleteFromDisk = useCallback(() => {
-    setDeletePromptOpen(false);
-    archiveWorktreeRecord(true);
-  }, [archiveWorktreeRecord]);
-
-  const cancelDeletePrompt = useCallback(() => {
-    setDeletePromptOpen(false);
-  }, []);
+  }, [
+    aheadOfOrigin,
+    archiveWorkspaceRecord,
+    diffStat,
+    isDirty,
+    name,
+    warningLabels,
+    workspaceKind,
+  ]);
 
   return {
-    beginArchive,
-    deletePromptOpen,
-    confirmKeepOnDisk,
-    confirmDeleteFromDisk,
-    cancelDeletePrompt,
+    archive,
   };
 }

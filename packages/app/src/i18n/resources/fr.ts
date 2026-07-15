@@ -166,7 +166,7 @@ export const fr: TranslationResources = {
     hints: {
       thinking: "Mode réflexion",
       model: "Changer de modèle",
-      mode: "Changer le mode d'autorisation",
+      mode: "Changer de mode",
     },
   },
   agentStream: {
@@ -209,7 +209,7 @@ export const fr: TranslationResources = {
     },
   },
   sessions: {
-    title: "Historique des agents",
+    title: "Historique",
     empty: "Aucune séance pour l'instant",
     actions: {
       loadMore: "Charger plus",
@@ -248,6 +248,12 @@ export const fr: TranslationResources = {
       copyCode: "Copier le code",
       copyTurn: "Copier le tour",
       copyMessage: "Copier le message",
+      forkMenu: "Dupliquer le message",
+      forkInNewTab: "Dupliquer dans un nouvel onglet",
+      forkInNewWorkspace: "Dupliquer dans un nouvel espace de travail",
+      forkUnavailable: "Mettez l'hôte à jour pour utiliser ceci.",
+      forkMissingWorkspace: "Cet agent n'est pas dans un espace de travail.",
+      forkFailed: "Impossible de dupliquer le chat",
       openFile: "Ouvrir le fichier",
       copied: "Copié",
     },
@@ -331,15 +337,22 @@ export const fr: TranslationResources = {
   workspace: {
     route: {
       loading: "Chargement de l'espace de travail",
+      restoring: "Restauration de l'espace de travail",
+      restoreFailed:
+        "Impossible de restaurer cet espace de travail — le répertoire a peut-être été déplacé ou supprimé",
       connecting: "De liaison",
       hostOffline: "{{hostName}}est hors ligne",
       cannotReachHost: "Impossible d'atteindre{{hostName}}",
       hostStatus: "StatutHost:{{status}}",
       missing: "Workspaceintrouvable",
+      needsHostUpgrade: "Mettez à jour votre hôte pour restaurer cet espace de travail",
       manageHost: "Gérer l'hôte",
     },
     hoverCard: {
       scriptsAccessibility: "ScriptsWorkspace",
+      copyPath: "Copier le chemin",
+      copyBranchName: "Copier le nom de la branche",
+      copied: "Copié",
     },
     fileExplorer: {
       sort: {
@@ -413,7 +426,21 @@ export const fr: TranslationResources = {
         enterUrl: "EntrezURL",
         openDevTools: "Outils de développement du navigateur ouvert",
         cancelSelector: "Annuler le sélecteur d'élément",
-        selectElement: "Sélectionner un élément",
+        annotateElement: "Annoter l'élément",
+        screenshotElement: "Capturer l'élément",
+        screenshotCopied: "Capture d'écran copiée dans le presse-papiers",
+        elementCopied: "Élément copié dans le presse-papiers",
+        screenshotFailed: "Impossible de copier la capture",
+      },
+      annotate: {
+        title: "Annoter l'élément",
+        placeholder: "Message à l'agent concernant cet élément…",
+        submit: "Joindre",
+        cancel: "Annuler",
+      },
+      devices: {
+        label: "Taille de l'appareil",
+        responsive: "Adaptatif",
       },
       errors: {
         failedToLoad: "Échec du chargement de la page",
@@ -598,21 +625,21 @@ export const fr: TranslationResources = {
           success: "Mis à jour",
         },
         archive: {
-          label: "Arbre de travail d'archivage",
+          label: "Archiver l’espace de travail",
           pending: "Archivage...",
           success: "Archivé",
         },
         mergePr: {
-          squash: "Fusionner",
-          merge: "Fusionner",
-          rebase: "Fusionner",
-          pending: "Fusion dePR...",
-          success: "PRfusionné",
+          squash: "Fusionner PR (squash)",
+          merge: "Fusionner PR (merge)",
+          rebase: "Fusionner PR (rebase)",
+          pending: "Fusion de PR...",
+          success: "PR fusionné",
         },
         autoMerge: {
-          enableSquash: "Fusion automatique",
-          enableMerge: "Fusion automatique",
-          enableRebase: "Fusion automatique",
+          enableSquash: "Fusion automatique (squash)",
+          enableMerge: "Fusion automatique (merge)",
+          enableRebase: "Fusion automatique (rebase)",
           enabled: "Fusion automatique activée",
           enabling: "Activation de la fusion automatique...",
           disabling: "Désactivation de la fusion automatique...",
@@ -652,8 +679,6 @@ export const fr: TranslationResources = {
             "La mise à jour n'est pas disponible tant que vous avez des modifications locales, alors validez-les ou cachez-les d'abord",
           updateCurrent:
             "La mise à jour n'est pas disponible car cette branche est déjà à jour avec{{baseRef}}",
-          archiveNotWorktree:
-            "L'archive n'est pas disponible ici car cet espace de travail n'a pas été créé en tant qu'arbre de travailPaseo",
           mergePrNoGithub:
             "La fusionPRn'est pas disponible pour le moment carGitHubn'est pas connecté",
           mergePrMissing:
@@ -684,11 +709,9 @@ export const fr: TranslationResources = {
           baseRefUnavailable: "Réf de base indisponible",
           failedMerge: "Échec de la fusion",
           failedMergeFromBase: "Échec de la fusion à partir de la base",
-          worktreePathUnavailable: "Chemin d'accès à l'arbre de travail indisponible",
-          failedArchive: "Échec de l'archivage de l'arbre de travail",
         },
         archiveWarning: {
-          title: "Archiver «{{worktreeName}}»?",
+          title: "Archiver «{{workspaceName}}»?",
           confirm: "Archive",
           cancel: "Annuler",
           uncommittedChanges: "Modifications non validées",
@@ -706,11 +729,19 @@ export const fr: TranslationResources = {
         tooLarge: "Diff trop grand pour être affiché",
         unified: "Différentiel unifié",
         split: "Différent côte à côte",
+        switchToUnified: "Passer au diff unifié",
+        switchToSplit: "Passer au diff côte à côte",
+        showTreeView: "Afficher l'arborescence des dossiers",
+        showFlatView: "Afficher la liste de fichiers à plat",
+        options: "Options du diff",
         hideWhitespace: "Masquer les espaces",
+        showWhitespace: "Afficher les espaces",
         scrollLongLines: "Faire défiler les longues lignes",
         wrapLongLines: "Enroulez les longues lignes",
         collapseAll: "Réduire tous les fichiers",
         expandAll: "Développer tous les fichiers",
+        collapseAllFolders: "Réduire tous les dossiers",
+        expandAllFolders: "Développer tous les dossiers",
         refreshing: "Rafraîchissant",
         refresh: "Rafraîchir",
         refreshState: "Actualiser l'état de git etGitHub",
@@ -736,6 +767,9 @@ export const fr: TranslationResources = {
         failedOpen: "Échec de l'ouverture de l'espace de travail",
       },
       pr: {
+        actions: {
+          viewPullRequest: "Voir",
+        },
         sections: {
           checks: "Chèques",
           reviews: "Avis",
@@ -766,6 +800,9 @@ export const fr: TranslationResources = {
     },
   },
   sidebar: {
+    pinned: {
+      title: "Épinglés",
+    },
     host: {
       noHost: "Aucun hôte",
       switchTitle: "Changer d'hôte",
@@ -774,12 +811,25 @@ export const fr: TranslationResources = {
     actions: {
       addProject: "Ajouter un projet",
       newWorkspace: "Nouvel espace de travail",
+      hosts: "Hôtes",
       home: "Maison",
       settings: "Paramètres",
       closeSidebar: "Fermer la barre latérale",
     },
+    help: {
+      trigger: "Aide et assistance",
+      sectionHelp: "Aide",
+      diagnostics: "Lancer le diagnostic",
+      shortcuts: "Raccourcis clavier",
+      reportIssue: "Signaler un problème",
+      discord: "Discord",
+      github: "Créer un ticket GitHub",
+      whatsNew: "Nouveautés",
+      version: "Paseo {{version}}",
+    },
     sections: {
       sessions: "Historique",
+      schedules: "Planifications",
     },
     worktreeSetup: {
       title: "Configurer les scripts d'arbre de travail",
@@ -806,6 +856,7 @@ export const fr: TranslationResources = {
       toasts: {
         hostDisconnected: "Hostn'est pas connecté",
         removeFailed: "Échec de la suppression de certains espaces de travail",
+        updateHostToRemove: "Mettez à jour le host pour supprimer des projets.",
       },
       empty: {
         title: "Aucun projet pour l'instant",
@@ -824,8 +875,10 @@ export const fr: TranslationResources = {
         copyPath: "Copier le chemin",
         copyBranchName: "Copier le nom de la branche",
         rename: "Renommer l'espace de travail",
+        pin: "Épingler en haut",
+        unpin: "Désépingler",
         archive: "Archive",
-        archiveWorktree: "Arbre de travail d'archivage",
+        archiveWorkspace: "Archiver l’espace de travail",
         hideFromSidebar: "Masquer de la barre latérale",
         archiving: "Archivage...",
         hiding: "Dissimulation...",
@@ -836,12 +889,6 @@ export const fr: TranslationResources = {
           "Masquer «{{workspaceName}}» dans la barre latérale?\n\nLes fichiers sur le disque ne seront pas modifiés.",
         hideConfirm: "Cacher",
         cancel: "Annuler",
-      },
-      deleteWorktreePrompt: {
-        title: "Archiver l'espace de travail",
-        message: "Supprimer aussi le worktree du disque?",
-        keep: "Conserver sur le disque",
-        delete: "Supprimer",
       },
       rename: {
         title: "Renommer l'espace de travail",
@@ -854,14 +901,14 @@ export const fr: TranslationResources = {
         branchNameCopied: "Nom de la succursale copié",
         hostDisconnected: "Hostn'est pas connecté",
         hideFailed: "Échec du masquage de l'espace de travail",
-        archiveFailed: "Échec de l'archivage de l'arbre de travail",
+        archiveFailed: "Échec de l'archivage de l'espace de travail",
       },
     },
   },
   newWorkspace: {
     title: "Nouvel espace de travail",
     create: "Créer",
-    backing: {
+    isolation: {
       local: "Local",
       worktree: "Nouveau worktree",
       label: "Isolation",
@@ -953,8 +1000,17 @@ export const fr: TranslationResources = {
         upToDate: "L'application est à jour.",
         upToDateWithLastChecked: "Up to date. Last checked at {{time}}.",
         pending: "Nous vous informerons lorsque la mise à jour sera prête.",
+        pendingWithLastChecked:
+          "Nous vous informerons lorsque la mise à jour sera prête. Dernière vérification à {{time}}.",
+        pendingWithVersion: "Mise à jour trouvée : {{version}}. Téléchargement...",
+        pendingWithVersionAndLastChecked:
+          "Mise à jour trouvée : {{version}}. Téléchargement... Dernière vérification à {{time}}.",
         availableWithVersion: "Mise à jour prête:{{version}}",
+        availableWithVersionAndLastChecked:
+          "Mise à jour prête:{{version}}. Dernière vérification à {{time}}.",
         available: "Une mise à jour de l'application est prête à être installée.",
+        availableWithLastChecked:
+          "Une mise à jour de l'application est prête à être installée. Dernière vérification à {{time}}.",
         installed: "Mise à jour de l'application installée. Redémarrage requis.",
         failed: "Échec de la mise à jour de l'application.",
         idle: "L'état de la mise à jour n'a pas encore été vérifié.",
@@ -1051,6 +1107,12 @@ export const fr: TranslationResources = {
       },
     },
   },
+  rootError: {
+    kicker: "Une erreur s'est produite",
+    title: "Paseo a rencontré un problème.",
+    body: "Réessayez pour recharger l'application. Si cela continue, joignez les détails ci-dessous au signalement.",
+    details: "Détails",
+  },
   startup: {
     errorTitle: "Quelque chose s'est mal passé",
     errorDescription:
@@ -1082,8 +1144,10 @@ export const fr: TranslationResources = {
     },
   },
   projectPicker: {
-    placeholder: "Tapez un chemin de répertoire...",
+    placeholder: "Tapez pour rechercher...",
+    browse: "Parcourir…",
     opening: "Projet d'ouverture...",
+    searching: "Recherche en cours...",
     empty: "Commencez à taper un chemin",
     errors: {
       directory_not_found: "Répertoire introuvable.",
@@ -1344,6 +1408,8 @@ export const fr: TranslationResources = {
     backdrop: "Toile de fond du menu",
   },
   subagents: {
+    detachAction: "Detacher {{label}}",
+    detachTooltip: "Detacher le sous-agent",
     archiveAction: "Archiver{{label}}",
     archiveTooltip: "Sous-agent d'archivage",
   },
@@ -1367,6 +1433,34 @@ export const fr: TranslationResources = {
     subAgentActivity: "Activité du sous-agent",
     input: "Saisir",
     output: "Sortir",
+  },
+  toolCallGroup: {
+    editedFiles: {
+      one: "a modifié {{count}} fichier",
+      other: "a modifié {{count}} fichiers",
+    },
+    commands: {
+      one: "a exécuté {{count}} commande",
+      other: "a exécuté {{count}} commandes",
+    },
+    readFiles: {
+      one: "a lu {{count}} fichier",
+      other: "a lu {{count}} fichiers",
+    },
+    searches: {
+      one: "a effectué {{count}} recherche",
+      other: "a effectué {{count}} recherches",
+    },
+    otherTools: {
+      one: "a utilisé {{count}} autre outil",
+      other: "a utilisé {{count}} autres outils",
+    },
+    paseoCalls: {
+      one: "a appelé Paseo {{count}} fois",
+      other: "a appelé Paseo {{count}} fois",
+    },
+    and: "et",
+    failed: "{{count}} en échec",
   },
   renameModal: {
     rename: "Rebaptiser",
@@ -1408,6 +1502,7 @@ export const fr: TranslationResources = {
     },
     backToWorkspace: "Dos",
     addHost: "Ajouter un hôte",
+    enableBuiltInDaemon: "Activer le démon intégré",
     projects: "Projets",
     projectList: {
       hostLoadFailed: "Impossible de charger les projets depuis l'hôte{{hostName}}:{{message}}",
@@ -1416,7 +1511,6 @@ export const fr: TranslationResources = {
     groupInfo: "À propos de{{title}}",
     sections: {
       general: "Général",
-      daemon: "Daemon",
       appearance: "Apparence",
       shortcuts: "Raccourcis",
       integrations: "Intégrations",
@@ -1429,8 +1523,9 @@ export const fr: TranslationResources = {
       agents: "Agents",
       workspaces: "Workspaces",
       providers: "Fournisseurs",
+      usage: "Utilisation",
       terminals: "Terminals",
-      host: "Host",
+      host: "Aperçu",
     },
     general: {
       title: "Général",
@@ -1461,6 +1556,19 @@ export const fr: TranslationResources = {
         description: "Lignes conservées dans le tampon du terminal intégré",
         accessibilityLabel: "Lignes de défilementTerminal",
       },
+      autoExpandReasoning: {
+        label: "Toujours afficher le raisonnement",
+        description: "Afficher le raisonnement de l'agent entièrement développé par défaut",
+      },
+      toolCallDetail: {
+        label: "Affichage des appels d’outils",
+        description: "Comment les appels d’outils apparaissent dans la chronologie",
+        accessibilityLabel: "Sélectionner l’affichage des appels d’outils ({{value}})",
+        options: {
+          overview: "Résumé",
+          detailed: "Détails complets",
+        },
+      },
       language: {
         label: "Langue",
         description: "Langue de l'application",
@@ -1470,6 +1578,8 @@ export const fr: TranslationResources = {
           en: "English",
           es: "Español",
           fr: "Français",
+          ja: "日本語",
+          ptBR: "Português brasileiro",
           ru: "Русский",
           zhCN: "中文",
         },
@@ -1481,6 +1591,22 @@ export const fr: TranslationResources = {
       playTest: "Jouer à l'essai",
       playing: "Jouant...",
       playbackFailed: "Échec de la lecture:{{message}}",
+      app: {
+        title: "App diagnostic",
+        rowTitle: "App diagnostic",
+        rowHint: "Collect connection, daemon, provider, desktop, and log details",
+        run: "Run",
+        running: "Running diagnostic...",
+        copyLabel: "diagnostic",
+        copyAccessibility: "Copy diagnostic",
+        copyFailed: "Failed to copy diagnostic",
+        refreshAccessibility: "Refresh diagnostic",
+        refreshingAccessibility: "Refreshing diagnostic",
+        progress: {
+          client: "Client",
+          desktop: "Desktop",
+        },
+      },
     },
     about: {
       title: "À propos",
@@ -1524,6 +1650,9 @@ export const fr: TranslationResources = {
           ghostty: "Fantôme",
           auto: "Système",
         },
+      },
+      detailLevel: {
+        title: "Niveau de détail",
       },
       fonts: {
         title: "Polices",
@@ -1569,8 +1698,9 @@ export const fr: TranslationResources = {
       },
       help: {
         openProject: "Projet ouvert",
+        newWorkspace: "Nouvel espace de travail",
         newWorktree: "Nouvel arbre de travail",
-        archiveWorktree: "Arbre de travail d'archivage",
+        archiveWorkspace: "Archiver l’espace de travail",
         newTab: "Nouvel onglet",
         closeCurrentTab: "Fermer l'onglet actuel",
         jumpToWorkspace: "Accéder à l'espace de travail",
@@ -1600,6 +1730,7 @@ export const fr: TranslationResources = {
         toggleFocusMode: "Basculer le mode de mise au point",
         cycleTheme: "Thème du cycle",
         focusMessageInput: "Saisie du message de focus",
+        cycleAgentMode: "Parcourir les modes de l'agent",
         toggleVoiceMode: "Changer le mode vocal",
         startStopDictation: "Démarrer la dictée/stop",
         interruptAgent: "Agent d'interruption",
@@ -1763,6 +1894,30 @@ export const fr: TranslationResources = {
           dialogFailedMessage:
             "Impossible d'ouvrir la boîte de dialogue de confirmation de redémarrage.",
         },
+        update: {
+          title: "Update daemon",
+          hint: "Update the daemon to the latest version and restart it",
+          confirm: "Update",
+          confirmTitle: "Update {{name}}",
+          confirmMessage:
+            "This will update the daemon to the latest version and restart it. Running agents will be briefly interrupted.",
+          updating: "Updating...",
+          phaseStarting: "Preparing update...",
+          phaseDownloading: "Downloading packages...",
+          phaseInstalling: "Installing...",
+          phaseComplete: "Update complete, restarting...",
+          unableToReconnectTitle: "Unable to reconnect",
+          unableToReconnectMessage:
+            "{{name}} did not come back online after updating. Please verify the daemon restarted.",
+          unavailableTitle: "Host unavailable",
+          unavailableMessage:
+            "This host is not connected. Wait for it to come online before updating.",
+          offlineTitle: "Host offline",
+          offlineMessage: "This host is offline. Wait until it is back online before updating.",
+          requestFailedTitle: "Update failed",
+          requestFailedMessage: "Failed to update the daemon: {{error}}",
+          dialogFailedMessage: "Unable to open the update confirmation dialog.",
+        },
         dangerZone: "Zone dangereuse",
         remove: {
           title: "Supprimer l'hôte",
@@ -1821,6 +1976,9 @@ export const fr: TranslationResources = {
         button: "Diagnostique",
         refresh: "Rafraîchir",
         refreshing: "Rafraîchissant...",
+        copyLabel: "diagnostic",
+        copyAccessibility: "Copier le diagnostic",
+        copyFailed: "Échec de la copie du diagnostic",
         refreshAccessibility: "Actualiser le diagnostic",
         refreshingAccessibility: "Diagnostic rafraîchissant",
         running: "Exécution du diagnostic...",
@@ -1895,8 +2053,6 @@ export const fr: TranslationResources = {
       metadata: {
         title: "Génération de métadonnées",
         info: "Instructions spécifiques au projet injectées dans les invites de l'IA quePaseoutilise pour générer des métadonnées: utilisez-les pour appliquer les conventions de votre équipe telles que la dénomination des branches, le style de validation ou le formatPR.",
-        agentTitle: "TitresAgent",
-        agentTitlePlaceholder: "Gardez les titres impératifs et inférieurs à 40 caractères",
         branchName: "Noms des succursales",
         branchNamePlaceholder:
           "Préfixez les branches avec feat/ ou fix/, mb/ pour les branches personnelles",

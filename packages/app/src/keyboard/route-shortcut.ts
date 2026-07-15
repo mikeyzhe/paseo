@@ -45,7 +45,9 @@ const NONE: ShortcutAction = { kind: "none" };
 const PASSTHROUGH_DISPATCH: Record<string, KeyboardActionDefinition> = {
   "agent.interrupt": { id: "agent.interrupt", scope: "global" },
   "workspace.tab.new": { id: "workspace.tab.new", scope: "workspace" },
-  "worktree.archive": { id: "worktree.archive", scope: "sidebar" },
+  "workspace.new": { id: "workspace.new", scope: "sidebar" },
+  "workspace.archive": { id: "workspace.archive", scope: "sidebar" },
+  "workspace.pin": { id: "workspace.pin", scope: "sidebar" },
   "worktree.new": { id: "worktree.new", scope: "sidebar" },
   "workspace.terminal.new": { id: "workspace.terminal.new", scope: "workspace" },
   "workspace.tab.close.current": { id: "workspace.tab.close-current", scope: "workspace" },
@@ -81,6 +83,7 @@ const MESSAGE_INPUT_DISPATCH: Record<
   "dictation-confirm": { id: "message-input.dictation-confirm", scope: "message-input" },
   "voice-toggle": { id: "message-input.voice-toggle", scope: "message-input" },
   "voice-mute-toggle": { id: "message-input.voice-mute-toggle", scope: "message-input" },
+  "mode-cycle": { id: "message-input.mode-cycle", scope: "message-input" },
 };
 
 function hasPayloadKey<K extends "index" | "delta" | "kind">(

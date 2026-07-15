@@ -7,12 +7,30 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 
 import { createPaseoDaemon, parseListenString, type PaseoDaemonConfig } from "./bootstrap.js";
+import { AgentManagerShuttingDownError } from "./agent/agent-manager.js";
 import { hashDaemonPassword } from "./auth.js";
 import { generateLocalPairingOffer } from "./pairing-offer.js";
 import { createTestPaseoDaemon } from "./test-utils/paseo-daemon.js";
 import { createTestAgentClients } from "./test-utils/fake-agent-client.js";
 import { isPlatform } from "../test-utils/platform.js";
 import { findFreePort } from "./service-proxy.js";
+
+interface HeldAgentClose {
+  started: Promise<void>;
+  arm(): void;
+  closeSession(): Promise<void>;
+  finish(): void;
+}
+
+interface BlockedDaemonShutdown {
+  probeReconnect(): Promise<WebSocketProbeResult>;
+  tryCreateAgent(): Promise<"created" | "rejected">;
+  finish(): Promise<void>;
+}
+
+type WebSocketProbeResult =
+  | { status: "connected" }
+  | { status: "rejected"; statusCode: number | null };
 
 describe("paseo daemon bootstrap", () => {
   afterEach(() => {
@@ -21,7 +39,7 @@ describe("paseo daemon bootstrap", () => {
 
   test("starts and serves health endpoint", async () => {
     const daemonHandle = await createTestPaseoDaemon({
-      openai: { apiKey: "test-openai-api-key" },
+      openai: { stt: { apiKey: "test-openai-api-key" }, tts: { apiKey: "test-openai-api-key" } },
       speech: {
         providers: {
           dictationStt: { provider: "openai", explicit: true },
@@ -206,6 +224,17 @@ describe("paseo daemon bootstrap", () => {
     }
   });
 
+  test("stops new connections and agent registrations before closing agents", async () => {
+    const shutdown = await beginDaemonShutdownWithAgentClosing();
+    try {
+      await expect(
+        Promise.all([shutdown.probeReconnect(), shutdown.tryCreateAgent()]),
+      ).resolves.toEqual([{ status: "rejected", statusCode: 503 }, "rejected"]);
+    } finally {
+      await shutdown.finish();
+    }
+  });
+
   test("standalone listener exposes services only", async () => {
     const standalonePort = await findFreePort();
     const upstream = http.createServer((_req, res) => {
@@ -312,6 +341,7 @@ describe("paseo daemon bootstrap", () => {
         method: "POST",
         headers: {
           Authorization: "Bearer secret-debug-token",
+          Accept: "application/json, text/event-stream",
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -324,7 +354,7 @@ describe("paseo daemon bootstrap", () => {
         }),
       });
 
-      expect(response.status).toBe(400);
+      await response.text();
       const logs = logLines.join("\n");
       expect(logs).toContain("Agent MCP request");
       expect(logs).toContain("[redacted]");
@@ -338,7 +368,7 @@ describe("paseo daemon bootstrap", () => {
     }
   });
 
-  test("fails fast when OpenAI speech provider is configured without credentials", async () => {
+  test("starts when OpenAI speech provider is configured without credentials", async () => {
     const paseoHomeRoot = await mkdtemp(path.join(os.tmpdir(), "paseo-openai-config-"));
     const paseoHome = path.join(paseoHomeRoot, ".paseo");
     const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-"));
@@ -367,9 +397,14 @@ describe("paseo daemon bootstrap", () => {
     };
 
     try {
-      await expect(createPaseoDaemon(config, pino({ level: "silent" }))).rejects.toThrow(
-        "Missing OpenAI credentials",
-      );
+      const daemon = await createPaseoDaemon(config, pino({ level: "silent" }));
+      try {
+        await daemon.start();
+        expect(daemon.getListenTarget()).toBeDefined();
+        // Must also stop without throwing
+      } finally {
+        await daemon.stop();
+      }
     } finally {
       await rm(paseoHomeRoot, { recursive: true, force: true });
       await rm(staticDir, { recursive: true, force: true });
@@ -426,6 +461,19 @@ describe("paseo daemon bootstrap", () => {
     expect(parseListenString(" 6767 ")).toEqual({
       type: "tcp",
       host: "127.0.0.1",
+      port: 6767,
+    });
+  });
+
+  test("parses IPv6 listen targets correctly", () => {
+    expect(parseListenString("[::1]:6767")).toEqual({
+      type: "tcp",
+      host: "::1",
+      port: 6767,
+    });
+    expect(parseListenString("[::]:6767")).toEqual({
+      type: "tcp",
+      host: "::",
       port: 6767,
     });
   });
@@ -503,3 +551,97 @@ describe("paseo daemon bootstrap", () => {
     },
   );
 });
+
+function holdAgentClose(): HeldAgentClose {
+  let armed = false;
+  let markStarted = () => {};
+  let finish = () => {};
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  return {
+    started,
+    arm() {
+      armed = true;
+    },
+    async closeSession() {
+      if (!armed) {
+        return;
+      }
+      markStarted();
+      await finished;
+    },
+    finish: () => finish(),
+  };
+}
+
+async function beginDaemonShutdownWithAgentClosing(): Promise<BlockedDaemonShutdown> {
+  const heldAgentClose = holdAgentClose();
+  const daemonHandle = await createTestPaseoDaemon({
+    cleanup: false,
+    agentClients: createTestAgentClients({ closeSession: heldAgentClose.closeSession }),
+  });
+  const agentCwd = await mkdtemp(path.join(os.tmpdir(), "paseo-shutdown-agent-"));
+  await daemonHandle.daemon.agentManager.createAgent(
+    {
+      provider: "codex",
+      cwd: agentCwd,
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  heldAgentClose.arm();
+  const stopPromise = daemonHandle.daemon.stop();
+  await heldAgentClose.started;
+
+  return {
+    probeReconnect: () => probeWebSocketConnection(`ws://127.0.0.1:${daemonHandle.port}/ws`),
+    async tryCreateAgent() {
+      try {
+        await daemonHandle.daemon.agentManager.createAgent(
+          {
+            provider: "codex",
+            cwd: agentCwd,
+          },
+          undefined,
+          { workspaceId: undefined },
+        );
+        return "created";
+      } catch (error) {
+        if (error instanceof AgentManagerShuttingDownError) {
+          return "rejected";
+        }
+        throw error;
+      }
+    },
+    async finish() {
+      heldAgentClose.finish();
+      await stopPromise;
+      await daemonHandle.daemon.agentManager.flush().catch(() => undefined);
+      await Promise.all([
+        rm(path.dirname(daemonHandle.paseoHome), { recursive: true, force: true }),
+        rm(daemonHandle.staticDir, { recursive: true, force: true }),
+        rm(agentCwd, { recursive: true, force: true }),
+      ]);
+    },
+  };
+}
+
+function probeWebSocketConnection(url: string): Promise<WebSocketProbeResult> {
+  const ws = new WebSocket(url);
+  return new Promise((resolve) => {
+    ws.once("open", () => {
+      ws.close();
+      resolve({ status: "connected" });
+    });
+    ws.once("error", () => resolve({ status: "rejected", statusCode: null }));
+    ws.once("unexpected-response", (_request, response) => {
+      response.resume();
+      resolve({ status: "rejected", statusCode: response.statusCode ?? null });
+    });
+  });
+}

@@ -1,7 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { queryClient as appQueryClient } from "@/query/query-client";
+import { queryClient as appQueryClient } from "@/data/query-client";
 import type { AppLanguage } from "@/i18n/locales";
 import {
   DEFAULT_DESKTOP_SETTINGS,
@@ -26,6 +26,7 @@ import {
   MIN_UI_FONT_SIZE,
   loadAppSettingsFromStorage as loadAppSettingsFromStoragePure,
   loadSettingsFromStorage as loadSettingsFromStoragePure,
+  normalizeAppSettings,
   parseClampedFontSize,
   parseTerminalScrollbackLines,
   sanitizeFontFamily,
@@ -38,6 +39,7 @@ import {
   type ServiceUrlBehavior,
   type Settings,
   type SettingsDeps,
+  type WorkspaceTitleSource,
 } from "./storage";
 
 export {
@@ -67,6 +69,7 @@ export type {
   ServiceUrlBehavior,
   Settings,
   SettingsDeps,
+  WorkspaceTitleSource,
 };
 
 const productionDeps: SettingsDeps = {
@@ -93,6 +96,8 @@ export interface UseSettingsReturn {
   updateSettings: (updates: Partial<Settings>) => Promise<void>;
   resetSettings: () => Promise<void>;
 }
+
+type SettingsSelector<TSelected> = (settings: Settings) => TSelected;
 
 export function useAppSettings(): UseAppSettingsReturn {
   const queryClient = useQueryClient();
@@ -125,9 +130,10 @@ export function useAppSettings(): UseAppSettingsReturn {
       throw err;
     }
   }, [queryClient]);
+  const settings = useMemo(() => normalizeAppSettings(data), [data]);
 
   return {
-    settings: data ?? DEFAULT_CLIENT_SETTINGS,
+    settings,
     isLoading: isPending,
     error: error ?? null,
     updateSettings,
@@ -135,7 +141,11 @@ export function useAppSettings(): UseAppSettingsReturn {
   };
 }
 
-export function useSettings(): UseSettingsReturn {
+export function useSettings(): UseSettingsReturn;
+export function useSettings<TSelected>(selector: SettingsSelector<TSelected>): TSelected;
+export function useSettings<TSelected>(
+  selector?: SettingsSelector<TSelected>,
+): UseSettingsReturn | TSelected {
   const appSettings = useAppSettings();
   const desktopSettings = useDesktopSettings();
 
@@ -172,6 +182,15 @@ export function useSettings(): UseSettingsReturn {
       if (updates.syntaxTheme !== undefined) {
         appUpdates.syntaxTheme = updates.syntaxTheme;
       }
+      if (updates.workspaceTitleSource !== undefined) {
+        appUpdates.workspaceTitleSource = updates.workspaceTitleSource;
+      }
+      if (updates.autoExpandReasoning !== undefined) {
+        appUpdates.autoExpandReasoning = updates.autoExpandReasoning;
+      }
+      if (updates.toolCallDetailLevel !== undefined) {
+        appUpdates.toolCallDetailLevel = updates.toolCallDetailLevel;
+      }
       const promises: Promise<void>[] = [];
       if (Object.keys(appUpdates).length > 0) {
         promises.push(appSettings.updateSettings(appUpdates));
@@ -205,13 +224,19 @@ export function useSettings(): UseSettingsReturn {
     await Promise.all(resets);
   }, [appSettings, desktopSettings]);
 
+  const settings = {
+    ...DEFAULT_APP_SETTINGS,
+    ...appSettings.settings,
+    manageBuiltInDaemon: desktopSettings.settings.daemon.manageBuiltInDaemon,
+    releaseChannel: desktopSettings.settings.releaseChannel,
+  };
+
+  if (selector) {
+    return selector(settings);
+  }
+
   return {
-    settings: {
-      ...DEFAULT_APP_SETTINGS,
-      ...appSettings.settings,
-      manageBuiltInDaemon: desktopSettings.settings.daemon.manageBuiltInDaemon,
-      releaseChannel: desktopSettings.settings.releaseChannel,
-    },
+    settings,
     isLoading: appSettings.isLoading || desktopSettings.isLoading,
     error: appSettings.error ?? desktopSettings.error,
     updateSettings,

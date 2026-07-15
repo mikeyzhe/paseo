@@ -37,9 +37,30 @@ const PersistedWorkspaceRecordSchema = z.object({
     .nullable()
     .optional()
     .transform((value) => value ?? null),
+  // The worktree's git branch. Decoupled from displayName/title by construction:
+  // displayName holds the human name (title), branch holds the git branch. Only
+  // worktree workspaces carry a branch; directory/local_checkout leave it null.
+  branch: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  // The base branch the worktree was created from (normalized like worktree.json's
+  // baseRefName). Only worktree workspaces carry a base branch; checkout-branch
+  // worktrees and directory/local_checkout workspaces leave it null.
+  baseBranch: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
+  pinnedAt: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
 });
 
 export type PersistedProjectRecord = z.infer<typeof PersistedProjectRecordSchema>;
@@ -60,6 +81,10 @@ export interface WorkspaceRegistry {
   existsOnDisk(): Promise<boolean>;
   list(): Promise<PersistedWorkspaceRecord[]>;
   get(workspaceId: string): Promise<PersistedWorkspaceRecord | null>;
+  update(
+    workspaceId: string,
+    updater: (record: PersistedWorkspaceRecord) => PersistedWorkspaceRecord,
+  ): Promise<PersistedWorkspaceRecord | null>;
   upsert(record: PersistedWorkspaceRecord): Promise<void>;
   archive(workspaceId: string, archivedAt: string): Promise<void>;
   remove(workspaceId: string): Promise<void>;
@@ -70,7 +95,7 @@ type RegistryRecord = PersistedProjectRecord | PersistedWorkspaceRecord;
 class FileBackedRegistry<TRecord extends RegistryRecord> {
   private readonly filePath: string;
   private readonly logger: Logger;
-  private readonly schema: z.ZodType<TRecord, z.ZodTypeDef, unknown>;
+  private readonly schema: z.ZodType<TRecord, unknown>;
   private readonly getId: (record: TRecord) => string;
   private loaded = false;
   private readonly cache = new Map<string, TRecord>();
@@ -79,7 +104,7 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
   constructor(options: {
     filePath: string;
     logger: Logger;
-    schema: z.ZodType<TRecord, z.ZodTypeDef, unknown>;
+    schema: z.ZodType<TRecord, unknown>;
     getId: (record: TRecord) => string;
     component: string;
   }) {
@@ -120,6 +145,18 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
     const parsed = this.schema.parse(record);
     this.cache.set(this.getId(parsed), parsed);
     await this.enqueuePersist();
+  }
+
+  async update(id: string, updater: (record: TRecord) => TRecord): Promise<TRecord | null> {
+    await this.load();
+    const existing = this.cache.get(id);
+    if (!existing) {
+      return null;
+    }
+    const next = this.schema.parse(updater(existing));
+    this.cache.set(id, next);
+    await this.enqueuePersist();
+    return next;
   }
 
   async archive(id: string, archivedAt: string): Promise<void> {
@@ -236,20 +273,26 @@ export function createPersistedWorkspaceRecord(input: {
   kind: PersistedWorkspaceKind;
   displayName: string;
   title?: string | null;
+  branch?: string | null;
+  baseBranch?: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
+  pinnedAt?: string | null;
 }): PersistedWorkspaceRecord {
   return PersistedWorkspaceRecordSchema.parse({
     ...input,
     title: input.title ?? null,
+    branch: input.branch ?? null,
+    baseBranch: input.baseBranch ?? null,
     archivedAt: input.archivedAt ?? null,
+    pinnedAt: input.pinnedAt ?? null,
   });
 }
 
-// The single workspace-name rule: the user-set title always wins; otherwise fall
-// back to the freshest available derived display name (a live branch snapshot when
-// the caller has one, the persisted displayName otherwise).
+// The single workspace-name rule: the title always wins; otherwise fall back to
+// the freshest available derived display name (a live branch snapshot when the
+// caller has one, the persisted displayName otherwise).
 export function resolveWorkspaceName(input: {
   title: string | null;
   derivedDisplayName: string;

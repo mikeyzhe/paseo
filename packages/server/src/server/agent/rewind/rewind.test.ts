@@ -2,12 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { AgentManager } from "../agent-manager.js";
-import type {
-  AgentClient,
-  AgentSession,
-  AgentSessionConfig,
-  ListModelsOptions,
-} from "../agent-sdk-types.js";
+import type { AgentClient, AgentSession, AgentSessionConfig } from "../agent-sdk-types.js";
 import { FakeRewindSession, REWIND_TEST_CAPABILITIES } from "./test-rewind-session.js";
 
 class FakeRewindClient implements AgentClient {
@@ -24,8 +19,8 @@ class FakeRewindClient implements AgentClient {
     return this.session;
   }
 
-  async listModels(_options: ListModelsOptions) {
-    return [];
+  async fetchCatalog(_options: FetchCatalogOptions) {
+    return { models: [], modes: [] };
   }
 
   async isAvailable() {
@@ -61,10 +56,14 @@ async function createRewindHarness(options: { historyGate?: RewindHistoryGate } 
     logger: createTestLogger(),
     idFactory: () => "00000000-0000-4000-8000-000000000901",
   });
-  const agent = await manager.createAgent({
-    provider: "claude",
-    cwd: process.cwd(),
-  });
+  const agent = await manager.createAgent(
+    {
+      provider: "claude",
+      cwd: process.cwd(),
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
   return { manager, session, agentId: agent.id };
 }
 
@@ -99,6 +98,35 @@ describe("AgentManager rewind", () => {
 
     expect(session.aborted).toBe(true);
     expect(session.recordedRewinds).toEqual([{ mode: "files", messageId: "message-1" }]);
+  });
+
+  test("does not rewind when the in-flight turn rejects cancellation", async () => {
+    class RejectingInterruptSession extends FakeRewindSession {
+      override async interrupt(): Promise<void> {
+        throw new Error("provider still owns the active turn");
+      }
+    }
+
+    const session = new RejectingInterruptSession();
+    const manager = new AgentManager({
+      clients: { claude: new FakeRewindClient(session) },
+      logger: createTestLogger(),
+      idFactory: () => "00000000-0000-4000-8000-000000000902",
+    });
+    const agent = await manager.createAgent({ provider: "claude", cwd: process.cwd() }, undefined, {
+      workspaceId: undefined,
+    });
+    const run = manager.streamAgent(agent.id, "keep working");
+    await run.next();
+
+    await expect(manager.rewind(agent.id, "message-1", "files")).rejects.toThrow(
+      `Cannot rewind agent ${agent.id} because its active run cancellation was not acknowledged`,
+    );
+    expect(session.recordedRewinds).toEqual([]);
+    expect(manager.getAgent(agent.id)).toMatchObject({
+      lifecycle: "running",
+      activeForegroundTurnId: "turn-1",
+    });
   });
 
   test("blocks new prompts until the rehydrate epoch broadcasts", async () => {

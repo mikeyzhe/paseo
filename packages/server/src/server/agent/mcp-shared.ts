@@ -145,7 +145,7 @@ export async function waitForAgentWithTimeout(
       });
       const recentActivity = curateAgentActivity(recent.items);
       const waitedSeconds = Math.round(AGENT_WAIT_TIMEOUT_MS / 1000);
-      const message = `Awaiting the agent timed out after ${waitedSeconds}s. This does not mean the agent failed - call wait_for_agent again to continue waiting.\n\nRecent activity:\n${recentActivity}`;
+      const message = `Awaiting the agent timed out after ${waitedSeconds}s. This does not mean the agent failed - it is still running. Call get_agent_status to check on it, or continue with other work if you will receive a finish notification.\n\nRecent activity:\n${recentActivity}`;
       return {
         status: snapshot?.lifecycle ?? "idle",
         permission: null,
@@ -158,6 +158,13 @@ export async function waitForAgentWithTimeout(
   }
 }
 
+export function sanitizePermissionRequest(
+  permission: AgentPermissionRequest,
+): AgentPermissionRequest;
+export function sanitizePermissionRequest(permission: null | undefined): null;
+export function sanitizePermissionRequest(
+  permission: AgentPermissionRequest | null | undefined,
+): AgentPermissionRequest | null;
 export function sanitizePermissionRequest(
   permission: AgentPermissionRequest | null | undefined,
 ): AgentPermissionRequest | null {
@@ -173,6 +180,9 @@ export function sanitizePermissionRequest(
   }
   if (sanitized.input === undefined) {
     delete sanitized.input;
+  }
+  if (sanitized.detail === undefined) {
+    delete sanitized.detail;
   }
   if (sanitized.suggestions === undefined) {
     delete sanitized.suggestions;

@@ -9,6 +9,11 @@ The invariant is:
 
 > If the daemon has committed timeline rows for an agent, any connected client that opens or resumes that agent eventually displays every row through the daemon's current tail.
 
+Tool output is bounded before it enters either delivery path. Canonical shell tool output is sliced
+to 64 KiB, and the same bounded item is used for durable timeline rows and live stream events.
+Provider history hydration applies the same rule so reopening an agent cannot restore an oversized
+tool payload.
+
 ## Presence is not delivery
 
 Client heartbeat reports presence:
@@ -27,6 +32,8 @@ Large unbounded timeline responses can exceed relay frame limits, so catch-up us
 Page limits are projected-item targets. A tool call lifecycle is one projected item even if it spans many source sequence numbers, and assistant/reasoning chunks are merged before counting. The response carries `seqStart`, `seqEnd`, `sourceSeqRanges`, and `collapsed` so clients can advance sequence cursors without rendering delta rows.
 
 When the app fetches `direction: "after"` and the daemon responds with `hasNewer: true`, the app must immediately fetch the next page from `endCursor`. The catch-up is complete only when `hasNewer: false`.
+
+Initialization timeouts guard lack of catch-up progress, not the full multi-page sync. A successful page that queues the next `after` page refreshes the watchdog.
 
 The first load of an agent without a local cursor is different: it fetches a bounded latest tail page. Older history remains user-driven by scrolling upward.
 

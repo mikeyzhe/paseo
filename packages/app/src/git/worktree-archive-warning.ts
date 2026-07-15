@@ -7,12 +7,18 @@ export interface WorktreeArchiveRisk {
   diffStat?: { additions: number; deletions: number } | null;
 }
 
+export interface WorktreeArchiveRiskInput {
+  archiveHasUncommittedChanges?: boolean | null;
+  archiveUnpushedCommitCount?: number | null;
+  diffStat?: WorktreeArchiveRisk["diffStat"];
+}
+
 export interface WorktreeArchiveConfirmationInput extends WorktreeArchiveRisk {
-  worktreeName: string;
+  workspaceName: string;
 }
 
 export interface WorktreeArchiveWarningLabels {
-  title: (worktreeName: string) => string;
+  title: (workspaceName: string) => string;
   confirm: string;
   cancel: string;
   uncommittedChanges: string;
@@ -23,7 +29,7 @@ export interface WorktreeArchiveWarningLabels {
 }
 
 export const DEFAULT_WORKTREE_ARCHIVE_WARNING_LABELS: WorktreeArchiveWarningLabels = {
-  title: (worktreeName) => i18n.t("workspace.git.actions.archiveWarning.title", { worktreeName }),
+  title: (workspaceName) => i18n.t("workspace.git.actions.archiveWarning.title", { workspaceName }),
   confirm: i18n.t("workspace.git.actions.archiveWarning.confirm"),
   cancel: i18n.t("workspace.git.actions.archiveWarning.cancel"),
   uncommittedChanges: i18n.t("workspace.git.actions.archiveWarning.uncommittedChanges"),
@@ -42,6 +48,14 @@ export const DEFAULT_WORKTREE_ARCHIVE_WARNING_LABELS: WorktreeArchiveWarningLabe
       ? i18n.t("workspace.git.actions.archiveWarning.unpushedCommit", { count })
       : i18n.t("workspace.git.actions.archiveWarning.unpushedCommits", { count }),
 };
+
+export function toWorktreeArchiveRisk(input: WorktreeArchiveRiskInput): WorktreeArchiveRisk {
+  return {
+    isDirty: input.archiveHasUncommittedChanges,
+    aheadOfOrigin: input.archiveUnpushedCommitCount,
+    diffStat: input.diffStat,
+  };
+}
 
 function formatDiffStat(
   diffStat: WorktreeArchiveRisk["diffStat"],
@@ -109,7 +123,7 @@ export async function confirmRiskyWorktreeArchive(
   }
 
   return await confirmDialog({
-    title: labels.title(input.worktreeName),
+    title: labels.title(input.workspaceName),
     message,
     confirmLabel: labels.confirm,
     cancelLabel: labels.cancel,

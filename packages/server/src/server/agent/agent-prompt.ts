@@ -15,13 +15,13 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
 }
 
-export function startAgentRun(
+export async function startAgentRun(
   agentManager: AgentRunController,
   agentId: string,
   prompt: AgentPromptInput,
   logger: Logger,
   options?: StartAgentRunOptions,
-): { outOfBand: boolean } {
+): Promise<{ outOfBand: boolean }> {
   const snapshot = agentManager.getAgent(agentId);
   logger.trace(
     {
@@ -44,7 +44,7 @@ export function startAgentRun(
   const shouldReplace = Boolean(options?.replaceRunning && agentManager.hasInFlightRun(agentId));
   const runOptions = options?.runOptions;
   const iterator = shouldReplace
-    ? agentManager.replaceAgentRun(agentId, prompt, runOptions)
+    ? await agentManager.replaceAgentRun(agentId, prompt, runOptions)
     : agentManager.streamAgent(agentId, prompt, runOptions);
   logger.trace(
     {
@@ -90,20 +90,12 @@ export function startAgentRun(
  * an archived agent unarchives it the same way.
  */
 export async function unarchiveAgentState(
-  agentStorage: AgentStorage,
+  _agentStorage: AgentStorage,
   agentManager: AgentManager,
   agentId: string,
 ): Promise<boolean> {
-  const record = await agentStorage.get(agentId);
-  if (!record || !record.archivedAt) {
-    return false;
-  }
-  const updatedAt = new Date().toISOString();
-  await agentStorage.upsert({
-    ...record,
-    archivedAt: null,
-    updatedAt,
-  });
+  const unarchived = await agentManager.unarchiveSnapshot(agentId);
+  if (!unarchived) return false;
   agentManager.notifyAgentState(agentId);
   return true;
 }
@@ -205,7 +197,7 @@ export async function sendPromptToAgent(
     ? { ...params.runOptions, messageId: params.messageId }
     : params.runOptions;
 
-  return startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
+  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
     replaceRunning: true,
     runOptions,
   });
@@ -223,7 +215,7 @@ export async function startCreatedAgentInitialPrompt(
     return currentSnapshot;
   }
 
-  const dispatchResult = startAgentRun(
+  const dispatchResult = await startAgentRun(
     params.agentManager,
     params.agentId,
     params.prompt,
@@ -252,6 +244,22 @@ export interface SetupFinishNotificationParams {
   logger: Logger;
 }
 
+interface FinishNotificationBodyInput {
+  childAgentId: string;
+  title: string;
+  reason: "finished" | "errored" | "needs permission";
+  lastAssistantMessage: string | null;
+}
+
+function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
+  const statusLine = `Agent ${params.childAgentId} (${params.title}) ${params.reason}.`;
+  const lastAssistantMessage = params.lastAssistantMessage?.trim();
+  if (!lastAssistantMessage) {
+    return statusLine;
+  }
+  return `${statusLine}\n\n<agent-response>\n${lastAssistantMessage}\n</agent-response>`;
+}
+
 export function setupFinishNotification(params: SetupFinishNotificationParams): void {
   const { agentManager, agentStorage, childAgentId, callerAgentId, logger } = params;
   let hasSeenRunning = false;
@@ -265,9 +273,20 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     fired = true;
     unsubscribe?.();
 
+    const callerRecord = await agentStorage.get(callerAgentId);
+    if (callerRecord?.archivedAt) {
+      return;
+    }
+
     const record = await agentStorage.get(childAgentId);
     const title = record?.title ?? childAgentId;
-    const body = `Agent ${childAgentId} (${title}) ${reason}.`;
+    const lastAssistantMessage = await agentManager.getLastAssistantMessage(childAgentId);
+    const body = formatFinishNotificationBody({
+      childAgentId,
+      title,
+      reason,
+      lastAssistantMessage,
+    });
 
     await sendPromptToAgent({
       agentManager,
@@ -276,6 +295,15 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       prompt: formatSystemNotificationPrompt(body),
       unarchive: false,
       logger,
+    });
+  }
+
+  function notifySafely(reason: "finished" | "errored" | "needs permission"): void {
+    void notify(reason).catch((error) => {
+      logger.error(
+        { err: error, childAgentId, callerAgentId, reason },
+        "Failed to notify caller agent",
+      );
     });
   }
 
@@ -291,11 +319,11 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
           return;
         }
         if (event.agent.lifecycle === "error") {
-          void notify("errored");
+          notifySafely("errored");
           return;
         }
         if (event.agent.lifecycle === "idle" && hasSeenRunning) {
-          void notify("finished");
+          notifySafely("finished");
           return;
         }
         if (event.agent.lifecycle === "closed") {
@@ -307,7 +335,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       }
 
       if (event.event.type === "permission_requested") {
-        void notify("needs permission");
+        notifySafely("needs permission");
       }
     },
     { agentId: childAgentId, replayState: false },
@@ -326,6 +354,6 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   if (childSnapshot.lifecycle === "running") {
     hasSeenRunning = true;
   } else if (childSnapshot.lifecycle === "error") {
-    void notify("errored");
+    notifySafely("errored");
   }
 }

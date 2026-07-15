@@ -5,6 +5,8 @@ import type { LucideIcon } from "lucide-react-native";
 import { HEADER_INNER_HEIGHT, HEADER_INNER_HEIGHT_MOBILE } from "@/constants/layout";
 import { ICON_SIZE } from "@/styles/theme";
 import type { Theme } from "@/styles/theme";
+import { Shortcut } from "@/components/ui/shortcut";
+import type { ShortcutKey } from "@/utils/format-shortcut";
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -26,6 +28,7 @@ interface SidebarHeaderRowProps {
    * sit in a header group whose wrapper owns the single divider.
    */
   variant?: SidebarHeaderRowVariant;
+  shortcutKeys?: ShortcutKey[][] | null;
 }
 
 export function SidebarHeaderRow({
@@ -37,6 +40,7 @@ export function SidebarHeaderRow({
   nativeID,
   accessibilityLabel,
   variant = "header",
+  shortcutKeys = null,
 }: SidebarHeaderRowProps) {
   const ThemedIcon = useMemo(() => withUnistyles(Icon), [Icon]);
 
@@ -48,9 +52,10 @@ export function SidebarHeaderRow({
   const buttonStyle = useCallback(
     ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
       styles.button,
+      variant === "compact" && styles.buttonCompact,
       (Boolean(hovered) || isActive) && styles.buttonHovered,
     ],
-    [isActive],
+    [isActive, variant],
   );
 
   const renderChildren = useCallback(
@@ -63,10 +68,13 @@ export function SidebarHeaderRow({
             uniProps={isHighlighted ? foregroundColorMapping : foregroundMutedColorMapping}
           />
           <SidebarHeaderRowLabel label={label} isHighlighted={isHighlighted} />
+          {shortcutKeys && Boolean(state.hovered) ? (
+            <Shortcut chord={shortcutKeys} style={styles.shortcut} />
+          ) : null}
         </>
       );
     },
-    [ThemedIcon, isActive, label],
+    [ThemedIcon, isActive, label, shortcutKeys],
   );
 
   return (
@@ -128,6 +136,15 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[3],
     borderRadius: theme.borderRadius.lg,
   },
+  // Compact header entries (New workspace / History) sit tighter than the
+  // workspace-row shape the base button mirrors.
+  buttonCompact: {
+    minHeight: 32,
+    paddingVertical: theme.spacing[1.5],
+    // Match the project rows' inner padding so the icons align on one vertical
+    // edge with the workspace list below (base button uses a wider spacing[3]).
+    paddingHorizontal: theme.spacing[2],
+  },
   buttonHovered: {
     backgroundColor: theme.colors.surfaceSidebarHover,
   },
@@ -138,5 +155,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   labelHighlighted: {
     color: theme.colors.foreground,
+  },
+  shortcut: {
+    marginLeft: "auto",
   },
 }));

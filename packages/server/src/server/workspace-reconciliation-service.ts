@@ -50,7 +50,7 @@ export type ReconciliationChange =
       kind: "workspace_updated";
       workspaceId: string;
       directory: string;
-      fields: Partial<Pick<PersistedWorkspaceRecord, "projectId" | "displayName" | "kind">>;
+      fields: Partial<Pick<PersistedWorkspaceRecord, "projectId" | "branch" | "kind">>;
     };
 
 export interface ReconciliationResult {
@@ -160,8 +160,8 @@ export class WorkspaceReconciliationService {
     await this.mergeDuplicateProjectsByRoot(activeProjects, workspacesByProject, changes);
 
     // 3. Reconcile git metadata for active projects whose directories still exist.
-    //    A project with zero active workspaces is a first-class empty project — it
-    //    persists until explicitly removed and still reconciles its own metadata.
+    //    Projects persist until explicitly removed, even when they currently have
+    //    zero active workspaces, so they still reconcile their own metadata.
     //    Skip projects archived earlier in this pass (e.g. merged duplicates) so we
     //    don't resurrect them by upserting a stale, non-archived copy.
     const archivedProjectIds = new Set(
@@ -343,11 +343,10 @@ export class WorkspaceReconciliationService {
 
         const expectedKind = deriveWorkspaceKindFromMetadata(wsGit);
 
-        const workspaceUpdates: Partial<Pick<PersistedWorkspaceRecord, "displayName" | "kind">> =
-          {};
+        const workspaceUpdates: Partial<Pick<PersistedWorkspaceRecord, "branch" | "kind">> = {};
 
-        if (wsGit.projectKind === "git" && workspace.displayName !== wsGit.workspaceDisplayName) {
-          workspaceUpdates.displayName = wsGit.workspaceDisplayName;
+        if (wsGit.projectKind === "git" && workspace.branch !== wsGit.currentBranch) {
+          workspaceUpdates.branch = wsGit.currentBranch;
         }
 
         if (workspace.kind !== expectedKind) {

@@ -7,18 +7,20 @@ import {
   ScheduleTargetSchema,
 } from "./types.js";
 
+const ScheduleCreateNewAgentConfigSchema = ScheduleTargetSchema.options[1].shape.config;
+
 const ScheduleCreateTargetSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("self"),
-    agentId: z.string().uuid(),
+    agentId: z.guid(),
   }),
   z.object({
     type: z.literal("agent"),
-    agentId: z.string().uuid(),
+    agentId: z.guid(),
   }),
   z.object({
     type: z.literal("new-agent"),
-    config: ScheduleTargetSchema.options[1].shape.config,
+    config: ScheduleCreateNewAgentConfigSchema,
   }),
 ]);
 
@@ -79,6 +81,9 @@ const ScheduleUpdateNewAgentConfigSchema = z.object({
   provider: z.string().trim().min(1).optional(),
   model: z.string().trim().min(1).nullable().optional(),
   modeId: z.string().trim().min(1).nullable().optional(),
+  thinkingOptionId: z.string().trim().min(1).nullable().optional(),
+  archiveOnFinish: z.boolean().optional(),
+  isolation: z.enum(["local", "worktree"]).optional(),
   cwd: z.string().trim().min(1).optional(),
 });
 

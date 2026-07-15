@@ -43,6 +43,35 @@ function createUniqueTimelineId(
   return `${base}_${suffixSeed.toString(36)}`;
 }
 
+function createAssistantItemId(
+  state: StreamItem[],
+  messageId: string | undefined,
+  text: string,
+  timestamp: Date,
+  reservedItemIds?: ReadonlySet<string>,
+): string {
+  if (!messageId) {
+    return createUniqueTimelineId(state, "assistant", text, timestamp);
+  }
+
+  const isOccupied = (id: string) =>
+    reservedItemIds?.has(id) === true || state.some((item) => item.id === id);
+  if (!isOccupied(messageId)) {
+    return messageId;
+  }
+
+  const segmentId = `${messageId}:segment:${timestamp.getTime().toString(36)}`;
+  if (!isOccupied(segmentId)) {
+    return segmentId;
+  }
+
+  let suffix = 1;
+  while (isOccupied(`${segmentId}:${suffix.toString(36)}`)) {
+    suffix += 1;
+  }
+  return `${segmentId}:${suffix.toString(36)}`;
+}
+
 export type StreamItem =
   | UserMessageItem
   | AssistantMessageItem
@@ -170,6 +199,11 @@ export interface TodoListItem {
 
 export type StreamUpdateSource = "live" | "canonical";
 
+interface StreamUpdateOptions {
+  source?: StreamUpdateSource;
+  reservedItemIds?: ReadonlySet<string>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -238,23 +272,14 @@ export function buildOptimisticUserMessage(input: OptimisticUserMessageInput): U
   };
 }
 
-function hasUserMessage(state: StreamItem[]): boolean {
-  return state.some((item) => item.kind === "user_message");
-}
-
 export function appendOptimisticUserMessageToStream(params: {
   tail: StreamItem[];
   head: StreamItem[];
   message: UserMessageItem;
   placement: OptimisticUserMessagePlacement;
-  skipIfUserMessageExists?: boolean;
 }): ApplyStreamEventResult {
   const { tail, head, message, placement } = params;
-  if (
-    tail.some((item) => item.id === message.id) ||
-    head.some((item) => item.id === message.id) ||
-    (params.skipIfUserMessageExists && (hasUserMessage(tail) || hasUserMessage(head)))
-  ) {
+  if (tail.some((item) => item.id === message.id) || head.some((item) => item.id === message.id)) {
     return { tail, head, changedTail: false, changedHead: false };
   }
 
@@ -273,6 +298,45 @@ export function appendOptimisticUserMessageToStream(params: {
     changedTail: true,
     changedHead: false,
   };
+}
+
+export function handoffCreatedAgentUserMessageToStream(params: {
+  tail: StreamItem[];
+  head: StreamItem[];
+  message: UserMessageItem;
+}): ApplyStreamEventResult {
+  const { tail, head, message } = params;
+  const items = [...tail, ...head];
+  const userIndex = items.findIndex((item) => item.kind === "user_message");
+  if (userIndex < 0) {
+    return appendOptimisticUserMessageToStream({
+      tail,
+      head,
+      message,
+      placement: "tail",
+    });
+  }
+
+  const userMessage = items[userIndex];
+  if (!userMessage || userMessage.kind !== "user_message" || userMessage.optimistic) {
+    return { tail, head, changedTail: false, changedHead: false };
+  }
+
+  const handedOffMessage = buildUserMessageItem({
+    id: userMessage.id,
+    text: message.text,
+    timestamp: message.timestamp,
+    optimistic: message,
+  });
+  if (userIndex < tail.length) {
+    const nextTail = [...tail];
+    nextTail[userIndex] = handedOffMessage;
+    return { tail: nextTail, head, changedTail: true, changedHead: false };
+  }
+
+  const nextHead = [...head];
+  nextHead[userIndex - tail.length] = handedOffMessage;
+  return { tail, head: nextHead, changedTail: false, changedHead: true };
 }
 
 function appendUserMessage(
@@ -320,6 +384,7 @@ function appendAssistantMessage(
   timestamp: Date,
   source: StreamUpdateSource,
   messageId?: string,
+  reservedItemIds?: ReadonlySet<string>,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!chunk) {
@@ -362,7 +427,7 @@ function appendAssistantMessage(
   }
 
   const idSeed = chunk.trim() || chunk;
-  const entryId = messageId ?? createUniqueTimelineId(state, "assistant", idSeed, timestamp);
+  const entryId = createAssistantItemId(state, messageId, idSeed, timestamp, reservedItemIds);
   const item: AssistantMessageItem = {
     kind: "assistant_message",
     id: entryId,
@@ -751,6 +816,7 @@ function reduceTimelineEvent(
   event: Extract<AgentStreamEventPayload, { type: "timeline" }>,
   timestamp: Date,
   source: StreamUpdateSource,
+  reservedItemIds?: ReadonlySet<string>,
 ): StreamItem[] {
   const item = event.item;
   switch (item.type) {
@@ -758,7 +824,14 @@ function reduceTimelineEvent(
       return finalizeActiveThoughts(appendUserMessage(state, item.text, timestamp, item.messageId));
     case "assistant_message":
       return finalizeActiveThoughts(
-        appendAssistantMessage(state, item.text, timestamp, source, item.messageId),
+        appendAssistantMessage(
+          state,
+          item.text,
+          timestamp,
+          source,
+          item.messageId,
+          reservedItemIds,
+        ),
       );
     case "reasoning":
       return appendThought(state, item.text, timestamp);
@@ -798,12 +871,12 @@ export function reduceStreamUpdate(
   state: StreamItem[],
   event: AgentStreamEventPayload,
   timestamp: Date,
-  options?: { source?: StreamUpdateSource },
+  options?: StreamUpdateOptions,
 ): StreamItem[] {
   const source = options?.source ?? "live";
   switch (event.type) {
     case "timeline":
-      return reduceTimelineEvent(state, event, timestamp, source);
+      return reduceTimelineEvent(state, event, timestamp, source, options?.reservedItemIds);
     case "thread_started":
     case "turn_started":
     case "turn_completed":
@@ -888,6 +961,13 @@ function getEventItemKind(event: AgentStreamEventPayload): StreamItem["kind"] | 
   }
 }
 
+function getIncomingAssistantMessageId(event: AgentStreamEventPayload): string | undefined {
+  if (event.type !== "timeline" || event.item.type !== "assistant_message") {
+    return undefined;
+  }
+  return event.item.messageId;
+}
+
 /**
  * Finalize head items before flushing to tail.
  * Marks thoughts as "ready" since they're no longer being streamed.
@@ -939,10 +1019,7 @@ function getTailAssistantToResume(params: {
   if (params.tailAssistant?.kind !== "assistant_message") {
     return null;
   }
-  const incomingMessageId =
-    params.event.type === "timeline" && params.event.item.type === "assistant_message"
-      ? params.event.item.messageId
-      : undefined;
+  const incomingMessageId = getIncomingAssistantMessageId(params.event);
   if (incomingMessageId !== undefined && params.tailAssistant.messageId !== incomingMessageId) {
     return null;
   }
@@ -986,6 +1063,7 @@ function promoteCompletedAssistantBlocks(params: { tail: StreamItem[]; head: Str
       groupId: blockGroupId,
       blockIndex: firstBlockIndex + offset,
     }),
+    ...(activeItem.messageId ? { messageId: activeItem.messageId } : {}),
     blockGroupId,
     blockIndex: firstBlockIndex + offset,
     text: block,
@@ -1035,9 +1113,14 @@ export function flushHeadToTail(tail: StreamItem[], head: StreamItem[]): StreamI
 
 /**
  * Determine if the head should be flushed based on incoming event kind.
- * Flush when a different kind arrives or when the incoming kind is not streamable.
+ * Flush when a different streamable lane starts, including a new identified assistant message.
  */
-function shouldFlushHead(head: StreamItem[], incomingKind: StreamItem["kind"] | null): boolean {
+function shouldFlushHead(input: {
+  head: StreamItem[];
+  incomingKind: StreamItem["kind"] | null;
+  event: AgentStreamEventPayload;
+}): boolean {
+  const { head, incomingKind, event } = input;
   if (head.length === 0) {
     return false;
   }
@@ -1069,6 +1152,11 @@ function shouldFlushHead(head: StreamItem[], incomingKind: StreamItem["kind"] | 
   // If incoming kind is different from current head's streamable kind, flush
   if (lastStreamable.kind !== incomingKind) {
     return true;
+  }
+
+  if (incomingKind === "assistant_message" && lastStreamable.kind === "assistant_message") {
+    const incomingMessageId = getIncomingAssistantMessageId(event);
+    return incomingMessageId !== undefined && lastStreamable.messageId !== incomingMessageId;
   }
 
   return false;
@@ -1133,7 +1221,13 @@ export function applyStreamEvent(params: {
   const incomingKind = getEventItemKind(event);
 
   // Check if we need to flush head before processing this event
-  if (shouldFlushHead(nextHead, incomingKind)) {
+  if (
+    shouldFlushHead({
+      head: nextHead,
+      incomingKind,
+      event,
+    })
+  ) {
     flushHead();
   }
 
@@ -1152,7 +1246,17 @@ export function applyStreamEvent(params: {
 
   // For streamable kinds, apply to head
   if (incomingKind !== null && isStreamableKind(incomingKind)) {
-    const reduced = reduceStreamUpdate(nextHead, event, timestamp, { source });
+    const reservedItemIds =
+      incomingKind === "assistant_message" && getActiveAssistantHeadIndex(nextHead) < 0
+        ? new Set(
+            nextTail.flatMap((item) =>
+              item.kind === "assistant_message" && item.blockGroupId
+                ? [item.id, item.blockGroupId]
+                : [item.id],
+            ),
+          )
+        : undefined;
+    const reduced = reduceStreamUpdate(nextHead, event, timestamp, { source, reservedItemIds });
     if (reduced !== nextHead) {
       nextHead = reduced;
       changedHead = true;

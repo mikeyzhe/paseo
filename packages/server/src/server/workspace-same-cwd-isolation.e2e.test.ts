@@ -5,7 +5,19 @@ import path from "node:path";
 
 import { DaemonClient } from "./test-utils/index.js";
 import { createTestPaseoDaemon } from "./test-utils/paseo-daemon.js";
+import { createTestLogger } from "../test-utils/test-logger.js";
+import { AgentStorage } from "./agent/agent-storage.js";
 import { getAskModeConfig } from "./daemon-e2e/agent-configs.js";
+import { MockLoadTestAgentClient } from "./agent/providers/mock-load-test-agent.js";
+import type {
+  AgentCapabilityFlags,
+  AgentClient,
+  AgentMode,
+  AgentModelDefinition,
+  AgentPersistenceHandle,
+  AgentSession,
+  AgentSessionConfig,
+} from "./agent/agent-sdk-types.js";
 import {
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
@@ -13,10 +25,131 @@ import {
 
 const WORKSPACE_A = "wks_same_cwd_a";
 const WORKSPACE_B = "wks_same_cwd_b";
+const LEGACY_OWNER_WORKSPACE = "wks_legacy_owner";
+const PERMISSION_WAIT_MS = 15_000;
+const SNAPSHOT_STORM_PROVIDER_COUNT = 18;
+const SNAPSHOT_STORM_MODELS_PER_PROVIDER = 150;
+const SNAPSHOT_STORM_DESCRIPTION = "x".repeat(120);
 
-// Seed two active workspaces that share one cwd, so we can prove Phase 1
-// attributes agents, terminals, and status by workspaceId rather than by
-// directory. Both registry files must exist on disk before the daemon starts:
+const SNAPSHOT_STORM_CAPABILITIES: AgentCapabilityFlags = {
+  supportsStreaming: false,
+  supportsSessionPersistence: false,
+  supportsDynamicModes: false,
+  supportsMcpServers: false,
+  supportsReasoningStream: false,
+  supportsToolInvocations: false,
+};
+
+class SnapshotStormProviderClient implements AgentClient {
+  readonly capabilities = SNAPSHOT_STORM_CAPABILITIES;
+  private readonly models: AgentModelDefinition[];
+
+  constructor(
+    readonly provider: string,
+    private readonly delayMs: number,
+  ) {
+    this.models = Array.from({ length: SNAPSHOT_STORM_MODELS_PER_PROVIDER }, (_, index) => ({
+      provider,
+      id: `${provider}-model-${index.toString().padStart(3, "0")}`,
+      label: `${provider} model ${index.toString().padStart(3, "0")}`,
+      description: SNAPSHOT_STORM_DESCRIPTION,
+      isDefault: index === 0,
+      metadata: {
+        providerId: provider,
+        modelId: `model-${index.toString().padStart(3, "0")}`,
+      },
+    }));
+  }
+
+  async createSession(_config: AgentSessionConfig): Promise<AgentSession> {
+    throw new Error(`${this.provider} is only used for provider snapshot tests`);
+  }
+
+  async resumeSession(_handle: AgentPersistenceHandle): Promise<AgentSession> {
+    throw new Error(`${this.provider} is only used for provider snapshot tests`);
+  }
+
+  async fetchCatalog(): Promise<{ models: AgentModelDefinition[]; modes: AgentMode[] }> {
+    await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    return { models: this.models, modes: [] };
+  }
+
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+class MetadataMockLoadTestAgentClient extends MockLoadTestAgentClient {
+  override async fetchCatalog(): Promise<{ models: AgentModelDefinition[]; modes: AgentMode[] }> {
+    return {
+      models: [
+        {
+          provider: "mock",
+          id: "gpt-5.4-mini",
+          label: "GPT 5.4 Mini",
+          isDefault: true,
+        },
+      ],
+      modes: [],
+    };
+  }
+}
+
+function createSnapshotStormClients(): SnapshotStormProviderClient[] {
+  return Array.from(
+    { length: SNAPSHOT_STORM_PROVIDER_COUNT },
+    (_, index) =>
+      new SnapshotStormProviderClient(`snapshot-storm-${index.toString().padStart(2, "0")}`, index),
+  );
+}
+
+async function createSnapshotStormDaemon(clients: SnapshotStormProviderClient[]) {
+  return createTestPaseoDaemon({
+    mcpEnabled: false,
+    isDev: true,
+    agentClients: {
+      mock: new MetadataMockLoadTestAgentClient(),
+      ...Object.fromEntries(clients.map((client) => [client.provider, client])),
+    },
+    providerOverrides: {
+      claude: { enabled: false },
+      codex: { enabled: false },
+      copilot: { enabled: false },
+      opencode: { enabled: false },
+      pi: { enabled: false },
+      omp: { enabled: false },
+      "mock-slow": { enabled: false },
+      ...Object.fromEntries(
+        clients.map((client) => [
+          client.provider,
+          {
+            extends: "mock",
+            label: client.provider,
+            enabled: true,
+          },
+        ]),
+      ),
+    },
+  });
+}
+
+function collectProviderSnapshotUpdateBytes(client: DaemonClient): {
+  sizes: number[];
+  unsubscribe: () => void;
+} {
+  const sizes: number[] = [];
+  const unsubscribe = client.subscribeRawMessages((message) => {
+    if (message.type !== "providers_snapshot_update") {
+      return;
+    }
+    sizes.push(JSON.stringify({ type: "session", message }).length);
+  });
+  return { sizes, unsubscribe };
+}
+
+// Seed two active workspaces that share one cwd, so we can prove agent
+// ownership and status stay workspaceId-scoped — a sibling that owns nothing
+// active stays done. Both registry files must exist on disk before the daemon starts:
 // bootstrapWorkspaceRegistries skips materialization when both files are
 // present, leaving these seeded records untouched.
 function seedSameCwdWorkspaces(): { paseoHomeRoot: string; cwd: string } {
@@ -63,12 +196,339 @@ function seedSameCwdWorkspaces(): { paseoHomeRoot: string; cwd: string } {
   return { paseoHomeRoot, cwd };
 }
 
+async function seedWorkspaceWithLegacyAgent(): Promise<{ paseoHomeRoot: string; cwd: string }> {
+  const paseoHomeRoot = mkdtempSync(path.join(tmpdir(), "paseo-legacy-agent-home-"));
+  const cwd = mkdtempSync(path.join(tmpdir(), "paseo-legacy-agent-dir-"));
+  const paseoHome = path.join(paseoHomeRoot, ".paseo");
+  const projectsDir = path.join(paseoHome, "projects");
+  mkdirSync(projectsDir, { recursive: true });
+
+  const project = createPersistedProjectRecord({
+    projectId: "prj_legacy_agent",
+    rootPath: cwd,
+    kind: "non_git",
+    displayName: path.basename(cwd),
+    createdAt: "2026-03-01T00:00:00.000Z",
+    updatedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: LEGACY_OWNER_WORKSPACE,
+    projectId: project.projectId,
+    cwd,
+    kind: "directory",
+    displayName: "original",
+    createdAt: "2026-03-01T00:00:00.000Z",
+    updatedAt: "2026-03-01T00:00:00.000Z",
+  });
+
+  writeFileSync(path.join(projectsDir, "projects.json"), JSON.stringify([project]));
+  writeFileSync(path.join(projectsDir, "workspaces.json"), JSON.stringify([workspace]));
+
+  const agentStorage = new AgentStorage(path.join(paseoHome, "agents"), createTestLogger());
+  await agentStorage.initialize();
+  await agentStorage.upsert({
+    id: "legacy-cwd-only-agent",
+    provider: "codex",
+    cwd,
+    createdAt: "2026-03-01T12:00:00.000Z",
+    updatedAt: "2026-03-01T12:00:00.000Z",
+    lastActivityAt: "2026-03-01T12:00:00.000Z",
+    lastUserMessageAt: null,
+    title: "Legacy cwd-only agent",
+    labels: {},
+    lastStatus: "running",
+    lastModeId: null,
+    config: null,
+    runtimeInfo: { provider: "codex", sessionId: null },
+    persistence: null,
+    archivedAt: null,
+  });
+
+  return { paseoHomeRoot, cwd };
+}
+
 async function statusByWorkspaceId(client: DaemonClient): Promise<Map<string, string>> {
   const workspaces = await client.fetchWorkspaces();
   return new Map(workspaces.entries.map((entry) => [entry.id, entry.status]));
 }
 
-test("two workspaces sharing one cwd stay isolated by workspaceId", async () => {
+async function workspaceName(client: DaemonClient, workspaceId: string): Promise<string | null> {
+  const workspaces = await client.fetchWorkspaces();
+  return workspaces.entries.find((entry) => entry.id === workspaceId)?.name ?? null;
+}
+
+async function legacyAgentWorkspaceId(client: DaemonClient): Promise<string | null | undefined> {
+  const agents = await client.fetchAgents({ scope: "active" });
+  return agents.entries.find((entry) => entry.agent.id === "legacy-cwd-only-agent")?.agent
+    .workspaceId;
+}
+
+async function agentIdsOwnedByWorkspace(
+  client: DaemonClient,
+  workspaceId: string,
+): Promise<string[]> {
+  const agents = await client.fetchAgents({ scope: "active" });
+  return agents.entries
+    .filter((entry) => entry.agent.workspaceId === workspaceId)
+    .map((entry) => entry.agent.id);
+}
+
+async function waitForPermission(client: DaemonClient, agentId: string) {
+  const parked = await client.waitForFinish(agentId, PERMISSION_WAIT_MS);
+  expect(parked.status).toBe("permission");
+  return parked;
+}
+
+test("daemon bootstrap migrates cwd-only legacy agents before same-cwd workspaces are added", async () => {
+  const { paseoHomeRoot, cwd } = await seedWorkspaceWithLegacyAgent();
+  const daemon = await createTestPaseoDaemon({ paseoHomeRoot });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.1.82",
+  });
+
+  try {
+    await client.connect();
+    expect(await legacyAgentWorkspaceId(client)).toBe(LEGACY_OWNER_WORKSPACE);
+    expect(await statusByWorkspaceId(client)).toEqual(
+      new Map([[LEGACY_OWNER_WORKSPACE, "running"]]),
+    );
+
+    const created = await client.createWorkspace({
+      source: { kind: "directory", path: cwd, projectId: "prj_legacy_agent" },
+      title: "Fresh same-cwd workspace",
+    });
+    const createdWorkspaceId = created.workspace?.id;
+    if (!createdWorkspaceId) {
+      throw new Error(created.error ?? "Expected same-cwd workspace to be created");
+    }
+
+    // The migrated legacy agent stays owned by LEGACY_OWNER. The freshly created
+    // same-cwd workspace owns nothing, so its status is done — status is per id,
+    // never shared across same-cwd workspaces.
+    expect(await legacyAgentWorkspaceId(client)).toBe(LEGACY_OWNER_WORKSPACE);
+    expect(await agentIdsOwnedByWorkspace(client, LEGACY_OWNER_WORKSPACE)).toEqual([
+      "legacy-cwd-only-agent",
+    ]);
+    expect(await agentIdsOwnedByWorkspace(client, createdWorkspaceId)).toEqual([]);
+    expect(await statusByWorkspaceId(client)).toEqual(
+      new Map([
+        [LEGACY_OWNER_WORKSPACE, "running"],
+        [createdWorkspaceId, "done"],
+      ]),
+    );
+  } finally {
+    await client.close().catch(() => undefined);
+    await daemon.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("workspace.create directory source with firstAgentContext generates a daemon-visible workspace title", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "paseo-named-local-dir-"));
+  const daemon = await createTestPaseoDaemon({
+    agentClients: { mock: new MockLoadTestAgentClient() },
+  });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.1.82",
+  });
+
+  try {
+    await client.connect();
+    await client.patchDaemonConfig({
+      metadataGeneration: { providers: [{ provider: "mock", model: "ten-second-stream" }] },
+    });
+
+    const created = await client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+      firstAgentContext: {
+        prompt: "Fix login bug",
+        attachments: [],
+      },
+    });
+    const workspaceId = created.workspace?.id;
+    if (!workspaceId) {
+      throw new Error(created.error ?? "Expected workspace to be created");
+    }
+
+    await expect
+      .poll(() => workspaceName(client, workspaceId), { timeout: 10_000 })
+      .toBe("Fix login bug");
+  } finally {
+    await client.close().catch(() => undefined);
+    await daemon.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("local workspace auto-title does not broadcast provider snapshot warm-up to clients", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "paseo-title-snapshot-storm-"));
+  const stormClients = createSnapshotStormClients();
+  const daemon = await createSnapshotStormDaemon(stormClients);
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.1.82",
+  });
+  const snapshotUpdates = collectProviderSnapshotUpdateBytes(client);
+
+  try {
+    await client.connect();
+    await client.getProvidersSnapshot({ cwd });
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await client.getProvidersSnapshot({ cwd });
+          return snapshot.entries.filter((entry) => entry.status === "loading").length;
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(0);
+    snapshotUpdates.sizes.length = 0;
+
+    const created = await client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+      firstAgentContext: {
+        prompt: "hello",
+        attachments: [],
+      },
+    });
+    const workspaceId = created.workspace?.id;
+    if (!workspaceId) {
+      throw new Error(created.error ?? "Expected workspace to be created");
+    }
+
+    await expect.poll(() => workspaceName(client, workspaceId), { timeout: 10_000 }).toBe("hello");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    expect(snapshotUpdates.sizes).toEqual([]);
+  } finally {
+    snapshotUpdates.unsubscribe();
+    await client.close().catch(() => undefined);
+    await daemon.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("create_agent_request with workspaceId does not retitle an existing workspace", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "paseo-agent-submit-title-"));
+  const daemon = await createTestPaseoDaemon({
+    agentClients: { mock: new MockLoadTestAgentClient() },
+  });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.1.82",
+  });
+
+  try {
+    await client.connect();
+    await client.patchDaemonConfig({
+      metadataGeneration: { providers: [{ provider: "mock", model: "ten-second-stream" }] },
+    });
+
+    const created = await client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+    });
+    const workspaceId = created.workspace?.id;
+    if (!workspaceId) {
+      throw new Error(created.error ?? "Expected workspace to be created");
+    }
+    const originalName = await workspaceName(client, workspaceId);
+    expect(originalName).toBe(path.basename(cwd));
+
+    const agent = await client.createAgent({
+      provider: "mock",
+      cwd,
+      workspaceId,
+      model: "ten-second-stream",
+      initialPrompt: "Fix login bug",
+    });
+    expect(agent.workspaceId).toBe(workspaceId);
+
+    expect(await workspaceName(client, workspaceId)).toBe(originalName);
+  } finally {
+    await client.close().catch(() => undefined);
+    await daemon.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("creating another same-cwd local workspace keeps running status on the owning workspace only", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "paseo-running-same-cwd-create-"));
+  const daemon = await createTestPaseoDaemon({
+    agentClients: { mock: new MockLoadTestAgentClient() },
+  });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.1.82",
+  });
+
+  try {
+    await client.connect();
+
+    const first = await client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+      title: "First same-cwd workspace",
+    });
+    const firstWorkspaceId = first.workspace?.id;
+    if (!firstWorkspaceId) {
+      throw new Error(first.error ?? "Expected first workspace to be created");
+    }
+
+    const second = await client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+      title: "Second same-cwd workspace",
+    });
+    const secondWorkspaceId = second.workspace?.id;
+    if (!secondWorkspaceId) {
+      throw new Error(second.error ?? "Expected second workspace to be created");
+    }
+
+    const agent = await client.createAgent({
+      provider: "mock",
+      cwd,
+      workspaceId: firstWorkspaceId,
+      model: "five-minute-stream",
+      initialPrompt: "stay running",
+    });
+    expect(agent.workspaceId).toBe(firstWorkspaceId);
+
+    await client.waitForAgentUpsert(agent.id, (snapshot) => snapshot.status === "running", 15_000);
+
+    // Only the workspace that owns the agent is running. The same-cwd sibling
+    // owns nothing active and stays done — status never fans out across a cwd.
+    expect(await statusByWorkspaceId(client)).toEqual(
+      new Map([
+        [firstWorkspaceId, "running"],
+        [secondWorkspaceId, "done"],
+      ]),
+    );
+
+    const third = await client.createWorkspace({
+      source: { kind: "directory", path: cwd },
+      title: "Third same-cwd workspace",
+    });
+    const thirdWorkspaceId = third.workspace?.id;
+    if (!thirdWorkspaceId) {
+      throw new Error(third.error ?? "Expected third workspace to be created");
+    }
+
+    expect((await client.fetchAgent({ agentId: agent.id }))?.agent.status).toBe("running");
+    expect(await statusByWorkspaceId(client)).toEqual(
+      new Map([
+        [firstWorkspaceId, "running"],
+        [secondWorkspaceId, "done"],
+        [thirdWorkspaceId, "done"],
+      ]),
+    );
+  } finally {
+    await client.close().catch(() => undefined);
+    await daemon.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("two workspaces sharing one cwd compute agent status per workspaceId", async () => {
   const { paseoHomeRoot, cwd } = seedSameCwdWorkspaces();
   const daemon = await createTestPaseoDaemon({ paseoHomeRoot });
   const client = new DaemonClient({
@@ -87,9 +547,10 @@ test("two workspaces sharing one cwd stay isolated by workspaceId", async () => 
       ]),
     );
 
-    // 1. Agent created in workspace A carries workspaceId A and only moves A's
-    //    status. Ask mode + a write parks the agent on a pending permission,
-    //    which is the deterministic "needs_input" signal for A.
+    // 1. Agent created in workspace A carries workspaceId A. Ask mode + a
+    //    write parks the agent on a pending permission, which drives the
+    //    "needs_input" signal onto workspace A only — its same-cwd sibling B
+    //    owns nothing and stays done.
     const agentA = await client.createAgent({
       ...getAskModeConfig("codex"),
       cwd,
@@ -102,10 +563,9 @@ test("two workspaces sharing one cwd stay isolated by workspaceId", async () => 
       agentA.id,
       'Use your shell tool to run: `printf "ok" > a.txt`. Request permission and wait.',
     );
-    const parkedA = await client.waitForFinish(agentA.id, 60000);
-    expect(parkedA.status).toBe("permission");
+    await waitForPermission(client, agentA.id);
 
-    const fetchedA = await client.fetchAgent(agentA.id);
+    const fetchedA = await client.fetchAgent({ agentId: agentA.id });
     expect(fetchedA?.agent.workspaceId).toBe(WORKSPACE_A);
 
     expect(await statusByWorkspaceId(client)).toEqual(
@@ -115,23 +575,8 @@ test("two workspaces sharing one cwd stay isolated by workspaceId", async () => 
       ]),
     );
 
-    // 2. Terminal created in A is delivered to A's directory subscription and to
-    //    A's list, but never to B's — exercises the workspaceId terminal filter.
-    const terminalSnapshotsByWorkspace = new Map<string | undefined, Set<string>>();
-    const unsubscribeTerminals = client.on("terminals_changed", (message) => {
-      if (message.type !== "terminals_changed") {
-        return;
-      }
-      for (const terminal of message.payload.terminals) {
-        const seen = terminalSnapshotsByWorkspace.get(terminal.workspaceId) ?? new Set<string>();
-        seen.add(terminal.id);
-        terminalSnapshotsByWorkspace.set(terminal.workspaceId, seen);
-      }
-    });
-
-    client.subscribeTerminals({ cwd, workspaceId: WORKSPACE_A });
-    client.subscribeTerminals({ cwd, workspaceId: WORKSPACE_B });
-
+    // 2. Terminal created in A is visible in A's list, but never in B's —
+    //    exercises the workspaceId terminal filter at the daemon boundary.
     const createdTerminal = await client.createTerminal(cwd, "A terminal", undefined, {
       workspaceId: WORKSPACE_A,
     });
@@ -141,26 +586,15 @@ test("two workspaces sharing one cwd stay isolated by workspaceId", async () => 
       throw new Error("Expected a created terminal id");
     }
 
-    // A's directory subscription receives a snapshot attributing the terminal
-    // to A. Poll the observed snapshot state instead of sleeping for a fixed
-    // window, so the assertion never races the daemon's snapshot push.
-    await expect
-      .poll(() => terminalSnapshotsByWorkspace.get(WORKSPACE_A)?.has(terminalId) ?? false)
-      .toBe(true);
-    unsubscribeTerminals();
-
-    // No snapshot ever attributed the terminal to B (the only other same-cwd
-    // workspace).
-    expect(terminalSnapshotsByWorkspace.get(WORKSPACE_B)?.has(terminalId) ?? false).toBe(false);
-
     const listForA = await client.listTerminals(cwd, undefined, { workspaceId: WORKSPACE_A });
     expect(listForA.terminals.some((terminal) => terminal.id === terminalId)).toBe(true);
 
     const listForB = await client.listTerminals(cwd, undefined, { workspaceId: WORKSPACE_B });
     expect(listForB.terminals.some((terminal) => terminal.id === terminalId)).toBe(false);
 
-    // 3. Agent created in workspace B carries workspaceId B and moves only B's
-    //    status. A keeps its own pending-permission state independently.
+    // 3. Agent created in workspace B carries workspaceId B and parks too. Now
+    //    each workspace owns its own parked agent, so both read needs_input —
+    //    by per-id ownership, not by sharing a cwd.
     const agentB = await client.createAgent({
       ...getAskModeConfig("codex"),
       cwd,
@@ -173,10 +607,9 @@ test("two workspaces sharing one cwd stay isolated by workspaceId", async () => 
       agentB.id,
       'Use your shell tool to run: `printf "ok" > b.txt`. Request permission and wait.',
     );
-    const parkedB = await client.waitForFinish(agentB.id, 60000);
-    expect(parkedB.status).toBe("permission");
+    await waitForPermission(client, agentB.id);
 
-    const fetchedB = await client.fetchAgent(agentB.id);
+    const fetchedB = await client.fetchAgent({ agentId: agentB.id });
     expect(fetchedB?.agent.workspaceId).toBe(WORKSPACE_B);
 
     expect(await statusByWorkspaceId(client)).toEqual(

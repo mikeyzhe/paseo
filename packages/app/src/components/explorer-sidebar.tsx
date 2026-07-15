@@ -7,7 +7,6 @@ import {
   StyleSheet as RNStyleSheet,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useIsFocused } from "@react-navigation/native";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
@@ -16,29 +15,28 @@ import { useTranslation } from "react-i18next";
 import {
   formatPrTabLabel,
   PullRequestPane,
+  PullRequestPaneError,
+  PullRequestPaneSkeleton,
   PullRequestTabIcon,
   usePrPaneData,
 } from "@/git/pull-request-panel";
-import {
-  usePanelStore,
-  selectIsFileExplorerOpen,
-  MIN_EXPLORER_SIDEBAR_WIDTH,
-  MAX_EXPLORER_SIDEBAR_WIDTH,
-  type ExplorerTab,
-} from "@/stores/panel-store";
-import { useExplorerSidebarAnimation } from "@/contexts/explorer-sidebar-animation-context";
-import { useSidebarAnimation } from "@/contexts/sidebar-animation-context";
-import { canCloseRightSidebarGesture } from "@/utils/sidebar-animation-state";
-import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
+import { useCheckoutGitActionsStore } from "@/git/actions-store";
+import type { UsePrPaneDataResult } from "@/git/pull-request-panel/use-data";
+import { usePanelStore, selectIsFileExplorerOpen, type ExplorerTab } from "@/stores/panel-store";
+import { useToast } from "@/contexts/toast-context";
+import { useCloseFileExplorerGesture } from "@/mobile-panels/gestures";
+import { MobilePanelOverlay } from "@/mobile-panels/presentation";
+import { HEADER_INNER_HEIGHT } from "@/constants/layout";
 import { GitDiffPane } from "@/git/diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
-import { useWindowControlsPadding } from "@/utils/desktop-window";
+import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
+import { RetainedPanelActivity } from "@/components/retained-panel";
 import { isWeb } from "@/constants/platform";
 import { buildWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
+import { resolveDesktopExplorerWidth } from "@/components/desktop-sidebar-layout";
 
-const MIN_CHAT_WIDTH = 400;
 function logExplorerSidebar(_event: string, _details: Record<string, unknown>): void {}
 
 interface ExplorerSidebarProps {
@@ -49,87 +47,18 @@ interface ExplorerSidebarProps {
   onOpenFile?: (filePath: string) => void;
 }
 
-export function ExplorerSidebar({
+interface ExplorerSidebarSharedState {
+  explorerTab: ExplorerTab;
+  handleTabPress: (tab: ExplorerTab) => void;
+}
+
+function useExplorerSidebarSharedState({
   serverId,
-  workspaceId,
   workspaceRoot,
   isGit,
-  onOpenFile,
-}: ExplorerSidebarProps) {
-  const { theme } = useUnistyles();
-  const isScreenFocused = useIsFocused();
-  const insets = useSafeAreaInsets();
-  const isMobile = useIsCompactFormFactor();
-  const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: isMobile }));
-  const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
-  const closeDesktopFileExplorer = usePanelStore((state) => state.closeDesktopFileExplorer);
+}: Pick<ExplorerSidebarProps, "serverId" | "workspaceRoot" | "isGit">): ExplorerSidebarSharedState {
   const explorerTab = usePanelStore((state) => state.explorerTab);
-  const explorerWidth = usePanelStore((state) => state.explorerWidth);
   const setExplorerTabForCheckout = usePanelStore((state) => state.setExplorerTabForCheckout);
-  const setExplorerWidth = usePanelStore((state) => state.setExplorerWidth);
-  const { width: viewportWidth } = useWindowDimensions();
-  const closeTouchStartX = useSharedValue(0);
-  const closeTouchStartY = useSharedValue(0);
-  const { mobilePanelState, gestureAnimatingRef: mobilePanelGestureAnimatingRef } =
-    useSidebarAnimation();
-
-  const { style: mobileKeyboardInsetStyle } = useKeyboardShiftStyle({
-    mode: "padding",
-    enabled: isMobile,
-  });
-
-  useEffect(() => {
-    if (isMobile) {
-      return;
-    }
-    const maxWidth = Math.max(
-      MIN_EXPLORER_SIDEBAR_WIDTH,
-      Math.min(MAX_EXPLORER_SIDEBAR_WIDTH, viewportWidth - MIN_CHAT_WIDTH),
-    );
-    if (explorerWidth > maxWidth) {
-      setExplorerWidth(maxWidth);
-    }
-  }, [explorerWidth, isMobile, setExplorerWidth, viewportWidth]);
-
-  const {
-    translateX,
-    backdropOpacity,
-    windowWidth,
-    animateToOpen,
-    animateToClose,
-    overlayVisible,
-    isGesturing,
-    gestureAnimatingRef,
-    closeGestureRef,
-  } = useExplorerSidebarAnimation();
-
-  // For resize drag, track the starting width
-  const startWidthRef = useRef(explorerWidth);
-  const resizeWidth = useSharedValue(explorerWidth);
-
-  const handleClose = useCallback(
-    (reason: string) => {
-      logExplorerSidebar("handleClose", {
-        reason,
-        isOpen,
-      });
-      if (isMobile) {
-        showMobileAgent();
-        return;
-      }
-      closeDesktopFileExplorer();
-    },
-    [closeDesktopFileExplorer, isMobile, isOpen, showMobileAgent],
-  );
-
-  const handleCloseFromGesture = useCallback(() => {
-    gestureAnimatingRef.current = true;
-    mobilePanelGestureAnimatingRef.current = true;
-    showMobileAgent();
-  }, [gestureAnimatingRef, mobilePanelGestureAnimatingRef, showMobileAgent]);
-
-  const enableSidebarCloseGesture = isMobile;
-
   const handleTabPress = useCallback(
     (tab: ExplorerTab) => {
       setExplorerTabForCheckout({ serverId, cwd: workspaceRoot, isGit, tab });
@@ -137,226 +66,146 @@ export function ExplorerSidebar({
     [isGit, serverId, setExplorerTabForCheckout, workspaceRoot],
   );
 
-  const handleHeaderClose = useCallback(() => handleClose("header-close-button"), [handleClose]);
-  const handleDesktopClose = useCallback(() => handleClose("desktop-close-button"), [handleClose]);
+  return { explorerTab, handleTabPress };
+}
 
-  // Swipe gesture to close (swipe right on mobile)
-  const closeGesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .withRef(closeGestureRef)
-        .enabled(enableSidebarCloseGesture)
-        // Use manual activation so child views keep touch streams
-        // unless we detect an intentional right-swipe close.
-        .manualActivation(true)
-        .onTouchesDown((event) => {
-          const touch = event.changedTouches[0];
-          if (!touch) {
-            return;
-          }
-          closeTouchStartX.value = touch.absoluteX;
-          closeTouchStartY.value = touch.absoluteY;
-        })
-        .onTouchesMove((event, stateManager) => {
-          const touch = event.changedTouches[0];
-          if (!touch || event.numberOfTouches !== 1) {
-            stateManager.fail();
-            return;
-          }
+export function CompactExplorerSidebar({
+  serverId,
+  workspaceId,
+  workspaceRoot,
+  isGit,
+  onOpenFile,
+}: ExplorerSidebarProps) {
+  const { theme } = useUnistyles();
+  const insets = useSafeAreaInsets();
+  const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: true }));
+  const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
+  const { explorerTab, handleTabPress } = useExplorerSidebarSharedState({
+    serverId,
+    workspaceRoot,
+    isGit,
+  });
+  const { style: mobileKeyboardInsetStyle } = useKeyboardShiftStyle({
+    mode: "padding",
+    enabled: true,
+  });
+  const { gesture: closeGesture } = useCloseFileExplorerGesture();
 
-          const deltaX = touch.absoluteX - closeTouchStartX.value;
-          const deltaY = touch.absoluteY - closeTouchStartY.value;
-          const absDeltaX = Math.abs(deltaX);
-          const absDeltaY = Math.abs(deltaY);
-
-          if (!canCloseRightSidebarGesture(mobilePanelState.value)) {
-            stateManager.fail();
-            return;
-          }
-
-          // Fail quickly on clear leftward or vertical intent so child views keep control.
-          if (deltaX <= -10) {
-            stateManager.fail();
-            return;
-          }
-          if (absDeltaY > 10 && absDeltaY > absDeltaX) {
-            stateManager.fail();
-            return;
-          }
-
-          // Activate only on intentional rightward movement.
-          if (deltaX >= 15 && absDeltaX > absDeltaY) {
-            stateManager.activate();
-          }
-        })
-        .onStart(() => {
-          isGesturing.value = true;
-        })
-        .onUpdate((event) => {
-          // Right sidebar: swipe right to close (positive translationX)
-          const newTranslateX = Math.max(0, Math.min(windowWidth, event.translationX));
-          translateX.value = newTranslateX;
-          const progress = 1 - newTranslateX / windowWidth;
-          backdropOpacity.value = Math.max(0, Math.min(1, progress));
-        })
-        .onEnd((event) => {
-          isGesturing.value = false;
-          const shouldClose = event.translationX > windowWidth / 3 || event.velocityX > 500;
-          runOnJS(logExplorerSidebar)("closeGestureEnd", {
-            translationX: event.translationX,
-            velocityX: event.velocityX,
-            shouldClose,
-            windowWidth,
-          });
-          if (shouldClose) {
-            animateToClose();
-            runOnJS(handleCloseFromGesture)();
-          } else {
-            animateToOpen();
-          }
-        })
-        .onFinalize(() => {
-          isGesturing.value = false;
-        }),
-    [
-      enableSidebarCloseGesture,
-      windowWidth,
-      translateX,
-      backdropOpacity,
-      mobilePanelState,
-      animateToOpen,
-      animateToClose,
-      handleCloseFromGesture,
-      isGesturing,
-      closeGestureRef,
-      closeTouchStartX,
-      closeTouchStartY,
-    ],
+  const handleClose = useCallback(
+    (reason: string) => {
+      logExplorerSidebar("handleClose", {
+        reason,
+        isOpen,
+      });
+      showMobileAgent();
+    },
+    [isOpen, showMobileAgent],
   );
 
-  // Desktop resize gesture (drag left edge)
+  const handleHeaderClose = useCallback(() => handleClose("header-close-button"), [handleClose]);
+
+  const mobileSidebarStyle = useMemo(
+    () => [
+      {
+        paddingTop: insets.top,
+        backgroundColor: theme.colors.surfaceSidebar,
+      },
+      mobileKeyboardInsetStyle,
+    ],
+    [insets.top, theme.colors.surfaceSidebar, mobileKeyboardInsetStyle],
+  );
+
+  return (
+    <RetainedPanelActivity active={isOpen}>
+      <MobilePanelOverlay
+        panel="file-explorer"
+        closeGesture={closeGesture}
+        panelStyle={mobileSidebarStyle}
+      >
+        <ExplorerSidebarContent
+          activeTab={explorerTab}
+          onTabPress={handleTabPress}
+          onClose={handleHeaderClose}
+          serverId={serverId}
+          workspaceId={workspaceId}
+          workspaceRoot={workspaceRoot}
+          isGit={isGit}
+          isMobile
+          isOpen={isOpen}
+          onOpenFile={onOpenFile}
+        />
+      </MobilePanelOverlay>
+    </RetainedPanelActivity>
+  );
+}
+
+export function ExplorerSidebar({
+  serverId,
+  workspaceId,
+  workspaceRoot,
+  isGit,
+  onOpenFile,
+}: ExplorerSidebarProps) {
+  const insets = useSafeAreaInsets();
+  const explorerWidth = usePanelStore((state) => state.explorerWidth);
+  const setExplorerWidth = usePanelStore((state) => state.setExplorerWidth);
+  const isOpen = usePanelStore((state) => selectIsFileExplorerOpen(state, { isCompact: false }));
+  const closeDesktopFileExplorer = usePanelStore((state) => state.closeDesktopFileExplorer);
+  const { explorerTab, handleTabPress } = useExplorerSidebarSharedState({
+    serverId,
+    workspaceRoot,
+    isGit,
+  });
+  const { width: viewportWidth } = useWindowDimensions();
+  const visibleExplorerWidth = resolveDesktopExplorerWidth({
+    requestedWidth: explorerWidth,
+    viewportWidth,
+  });
+  const startWidthRef = useRef(visibleExplorerWidth);
+  const resizeWidth = useSharedValue(visibleExplorerWidth);
+
+  useEffect(() => {
+    resizeWidth.value = visibleExplorerWidth;
+  }, [resizeWidth, visibleExplorerWidth]);
+
+  const handleDesktopClose = useCallback(() => {
+    logExplorerSidebar("handleClose", {
+      reason: "desktop-close-button",
+      isOpen,
+    });
+    closeDesktopFileExplorer();
+  }, [closeDesktopFileExplorer, isOpen]);
+
   const resizeGesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(!isMobile)
+        .enabled(true)
         .hitSlop({ left: 8, right: 8, top: 0, bottom: 0 })
         .onStart(() => {
-          startWidthRef.current = explorerWidth;
-          resizeWidth.value = explorerWidth;
+          startWidthRef.current = visibleExplorerWidth;
+          resizeWidth.value = visibleExplorerWidth;
         })
         .onUpdate((event) => {
-          // Dragging left (negative translationX) increases width
           const newWidth = startWidthRef.current - event.translationX;
-          const maxWidth = Math.max(
-            MIN_EXPLORER_SIDEBAR_WIDTH,
-            Math.min(MAX_EXPLORER_SIDEBAR_WIDTH, viewportWidth - MIN_CHAT_WIDTH),
-          );
-          const clampedWidth = Math.max(MIN_EXPLORER_SIDEBAR_WIDTH, Math.min(maxWidth, newWidth));
-          resizeWidth.value = clampedWidth;
+          resizeWidth.value = resolveDesktopExplorerWidth({
+            requestedWidth: newWidth,
+            viewportWidth,
+          });
         })
         .onEnd(() => {
           runOnJS(setExplorerWidth)(resizeWidth.value);
         }),
-    [isMobile, explorerWidth, resizeWidth, setExplorerWidth, viewportWidth],
+    [resizeWidth, setExplorerWidth, viewportWidth, visibleExplorerWidth],
   );
-
-  const sidebarAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
-  }));
-
-  const backdropAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: backdropOpacity.value,
-  }));
 
   const resizeAnimatedStyle = useAnimatedStyle(() => ({
     width: resizeWidth.value,
   }));
-
-  const backdropCombinedStyle = useMemo(
-    () => [
-      explorerStaticStyles.backdrop,
-      backdropAnimatedStyle,
-      // pointerEvents is React-owned, not worklet-owned: Reanimated never
-      // touches it, so a stale animated-prop revert can't wedge an invisible
-      // tap-eating backdrop.
-      { pointerEvents: isOpen ? ("auto" as const) : ("none" as const) },
-    ],
-    [backdropAnimatedStyle, isOpen],
-  );
-  const mobileSidebarStyle = useMemo(
-    () => [
-      explorerStaticStyles.mobileSidebar,
-      {
-        width: windowWidth,
-        paddingTop: insets.top,
-        backgroundColor: theme.colors.surfaceSidebar,
-      },
-      sidebarAnimatedStyle,
-      mobileKeyboardInsetStyle,
-    ],
-    [
-      windowWidth,
-      insets.top,
-      theme.colors.surfaceSidebar,
-      sidebarAnimatedStyle,
-      mobileKeyboardInsetStyle,
-    ],
-  );
-  // display is React-owned on the plain wrapper View (no animated styles), so
-  // a hidden overlay stays hidden no matter what Reanimated's Fabric overlay
-  // reverts the panel transform to after a heavy commit (reanimated#9635).
-  const overlayStyle = useMemo(
-    () => [
-      StyleSheet.absoluteFillObject,
-      { display: overlayVisible ? ("flex" as const) : ("none" as const) },
-    ],
-    [overlayVisible],
-  );
   const desktopSidebarStyle = useMemo(
     () => [explorerStaticStyles.desktopSidebar, resizeAnimatedStyle, { paddingTop: insets.top }],
     [resizeAnimatedStyle, insets.top],
   );
 
-  // Mobile: full-screen overlay with gesture.
-  // On web, keep it interactive only while open so closed sidebars don't eat taps.
-  let overlayPointerEvents: "auto" | "none" | "box-none";
-  if (!isWeb) overlayPointerEvents = "box-none";
-  else if (isOpen) overlayPointerEvents = "auto";
-  else overlayPointerEvents = "none";
-
-  // Navigation stacks can keep previous screens mounted; hide sidebars for unfocused
-  // screens so only the active screen exposes explorer/terminal surfaces.
-  if (!isScreenFocused) {
-    return null;
-  }
-
-  if (isMobile) {
-    return (
-      <View style={overlayStyle} pointerEvents={overlayPointerEvents}>
-        {/* Backdrop */}
-        <Animated.View style={backdropCombinedStyle} />
-
-        <GestureDetector gesture={closeGesture} touchAction="pan-y">
-          <Animated.View style={mobileSidebarStyle} pointerEvents="auto">
-            <SidebarContent
-              activeTab={explorerTab}
-              onTabPress={handleTabPress}
-              onClose={handleHeaderClose}
-              serverId={serverId}
-              workspaceId={workspaceId}
-              workspaceRoot={workspaceRoot}
-              isGit={isGit}
-              isMobile={isMobile}
-              isOpen={isOpen}
-              onOpenFile={onOpenFile}
-            />
-          </Animated.View>
-        </GestureDetector>
-      </View>
-    );
-  }
-
-  // Desktop: fixed width sidebar with resize handle
   if (!isOpen) {
     return null;
   }
@@ -364,12 +213,11 @@ export function ExplorerSidebar({
   return (
     <Animated.View style={desktopSidebarStyle}>
       <View style={DESKTOP_SIDEBAR_BORDER_STYLE}>
-        {/* Resize handle - absolutely positioned over left border */}
         <GestureDetector gesture={resizeGesture}>
           <View style={RESIZE_HANDLE_STYLE} />
         </GestureDetector>
 
-        <SidebarContent
+        <ExplorerSidebarContent
           activeTab={explorerTab}
           onTabPress={handleTabPress}
           onClose={handleDesktopClose}
@@ -427,7 +275,7 @@ interface SidebarContentProps {
   onOpenFile?: (filePath: string) => void;
 }
 
-function SidebarContent({
+function ExplorerSidebarContent({
   activeTab,
   onTabPress,
   onClose,
@@ -441,7 +289,7 @@ function SidebarContent({
 }: SidebarContentProps) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
-  const padding = useWindowControlsPadding("explorerSidebar");
+  const toast = useToast();
   const canQueryPullRequest = isGit && Boolean(workspaceRoot);
   const prPane = usePrPaneData({
     serverId,
@@ -450,25 +298,31 @@ function SidebarContent({
     timelineEnabled: activeTab === "pr" && canQueryPullRequest && isOpen,
   });
   const hasPullRequest = prPane.prNumber !== null;
+  const showPrTab = hasPullRequest || (activeTab === "pr" && prPane.isLoading);
   const requestedTab: ExplorerTab =
     !isGit && (activeTab === "changes" || activeTab === "pr") ? "files" : activeTab;
-  const resolvedTab: ExplorerTab =
-    requestedTab === "pr" && !hasPullRequest ? "changes" : requestedTab;
+  const resolvedTab: ExplorerTab = requestedTab === "pr" && !showPrTab ? "changes" : requestedTab;
   const prTabLabel = formatPrTabLabel(prPane.prNumber);
+  const refreshGitActions = useCheckoutGitActionsStore((s) => s.refresh);
+  const handlePrRetry = useCallback(() => {
+    refreshGitActions({ serverId, cwd: workspaceRoot }).catch((error) => {
+      toast.error(error instanceof Error ? error.message : t("workspace.git.diff.failedRefresh"));
+    });
+  }, [refreshGitActions, serverId, t, toast, workspaceRoot]);
   const workspaceAttachmentScopeKey = useMemo(
     () => buildWorkspaceAttachmentScopeKey({ serverId, workspaceId, cwd: workspaceRoot }),
     [serverId, workspaceId, workspaceRoot],
   );
 
-  const headerStyle = useMemo(
-    () => [styles.header, { paddingRight: padding.right }],
-    [padding.right],
-  );
-
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
       {/* Header with tabs and close button */}
-      <View style={headerStyle} testID="explorer-header">
+      <WindowChromeSafeArea
+        placement="inline"
+        horizontalPadding={theme.spacing[2]}
+        style={styles.header}
+        testID="explorer-header"
+      >
         <TitlebarDragRegion />
         <View style={styles.tabsContainer}>
           {isGit && (
@@ -487,7 +341,7 @@ function SidebarContent({
             onTabPress={onTabPress}
             testID="explorer-tab-files"
           />
-          {isGit && hasPullRequest && (
+          {isGit && showPrTab && (
             <ExplorerTabButton
               tab="pr"
               active={resolvedTab === "pr"}
@@ -511,7 +365,7 @@ function SidebarContent({
             </Pressable>
           )}
         </View>
-      </View>
+      </WindowChromeSafeArea>
 
       {/* Content based on active tab */}
       <View style={styles.contentArea} testID="explorer-content-area">
@@ -531,12 +385,13 @@ function SidebarContent({
             onOpenFile={onOpenFile}
           />
         )}
-        {resolvedTab === "pr" && prPane.data && (
-          <PullRequestPane
+        {resolvedTab === "pr" && (
+          <PrTabContent
             serverId={serverId}
             cwd={workspaceRoot}
-            data={prPane.data}
+            prPane={prPane}
             workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
+            onRetry={handlePrRetry}
           />
         )}
       </View>
@@ -544,21 +399,42 @@ function SidebarContent({
   );
 }
 
+interface PrTabContentProps {
+  serverId: string;
+  cwd: string;
+  prPane: UsePrPaneDataResult;
+  workspaceAttachmentScopeKey: string;
+  onRetry: () => void;
+}
+
+function PrTabContent({
+  serverId,
+  cwd,
+  prPane,
+  workspaceAttachmentScopeKey,
+  onRetry,
+}: PrTabContentProps) {
+  if (prPane.data) {
+    return (
+      <PullRequestPane
+        serverId={serverId}
+        cwd={cwd}
+        data={prPane.data}
+        activityLoading={prPane.activityLoading}
+        workspaceAttachmentScopeKey={workspaceAttachmentScopeKey}
+      />
+    );
+  }
+  if (prPane.error) {
+    return <PullRequestPaneError onRetry={onRetry} />;
+  }
+  return <PullRequestPaneSkeleton />;
+}
+
 // Static styles for Animated.Views — must NOT use Unistyles dynamic theme to
 // avoid the "Unable to find node on an unmounted component" crash when Unistyles
 // tries to patch the native node that Reanimated also manages.
 const explorerStaticStyles = RNStyleSheet.create({
-  backdrop: {
-    ...RNStyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-  },
-  mobileSidebar: {
-    position: "absolute" as const,
-    top: 0,
-    right: 0,
-    bottom: 0,
-    overflow: "hidden" as const,
-  },
   desktopSidebar: {
     position: "relative" as const,
   },
@@ -589,7 +465,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: theme.spacing[2],
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },

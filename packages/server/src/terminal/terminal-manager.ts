@@ -16,7 +16,7 @@ export interface TerminalListItem {
   id: string;
   name: string;
   cwd: string;
-  workspaceId?: string;
+  workspaceId: string;
   title?: string;
   activity: TerminalActivity | null;
 }
@@ -32,6 +32,7 @@ export interface TerminalActivityTransitionEvent {
   terminalId: string;
   name: string;
   cwd: string;
+  workspaceId: string;
   activity: TerminalActivity | null;
   previous: TerminalActivity | null;
 }
@@ -41,7 +42,7 @@ export type TerminalActivityListener = (event: TerminalActivityTransitionEvent) 
 export interface TerminalWorkspaceContributionChangedEvent {
   terminalId: string;
   cwd: string;
-  workspaceId?: string;
+  workspaceId: string;
 }
 
 export type TerminalWorkspaceContributionChangedListener = (
@@ -53,12 +54,14 @@ export interface TerminalManager {
   createTerminal(options: {
     id?: string;
     cwd: string;
-    workspaceId?: string;
+    workspaceId: string;
     name?: string;
     title?: string;
     env?: Record<string, string>;
     command?: string;
     args?: string[];
+    rows?: number;
+    cols?: number;
     activityToken?: string;
     activityUrl?: string | null;
   }): Promise<TerminalSession>;
@@ -159,7 +162,7 @@ export function createTerminalManager(
       emitTerminalWorkspaceContributionChanged({
         terminalId: session.id,
         cwd: session.cwd,
-        ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+        workspaceId: session.workspaceId,
       });
     }
 
@@ -200,7 +203,7 @@ export function createTerminalManager(
         emitTerminalWorkspaceContributionChanged({
           terminalId: session.id,
           cwd: session.cwd,
-          ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+          workspaceId: session.workspaceId,
         });
       }
     });
@@ -215,7 +218,7 @@ export function createTerminalManager(
       id: input.session.id,
       name: input.session.name,
       cwd: input.session.cwd,
-      ...(input.session.workspaceId ? { workspaceId: input.session.workspaceId } : {}),
+      workspaceId: input.session.workspaceId,
       title: input.session.getTitle(),
       activity: input.session.getActivity(),
     };
@@ -254,6 +257,7 @@ export function createTerminalManager(
       terminalId: input.session.id,
       name: input.session.name,
       cwd: input.session.cwd,
+      workspaceId: input.session.workspaceId,
       activity: input.transition.activity,
       previous: input.transition.previous,
     };
@@ -296,14 +300,10 @@ export function createTerminalManager(
       }
 
       // When the query carries a workspaceId, two workspaces sharing a cwd must
-      // not see each other's terminals. Exclude sessions owned by a different
-      // workspace; keep sessions without an owner (COMPAT: created by clients
-      // that predate terminal workspace ownership).
+      // not see each other's terminals. A missing owner is not workspace
+      // membership; unscoped callers can still list those legacy terminals.
       if (options?.workspaceId !== undefined) {
-        return sessions.filter(
-          (session) =>
-            session.workspaceId === undefined || session.workspaceId === options.workspaceId,
-        );
+        return sessions.filter((session) => session.workspaceId === options.workspaceId);
       }
       return sessions;
     },
@@ -311,12 +311,14 @@ export function createTerminalManager(
     async createTerminal(options: {
       id?: string;
       cwd: string;
-      workspaceId?: string;
+      workspaceId: string;
       name?: string;
       title?: string;
       env?: Record<string, string>;
       command?: string;
       args?: string[];
+      rows?: number;
+      cols?: number;
       activityToken?: string;
       activityUrl?: string | null;
     }): Promise<TerminalSession> {
@@ -345,11 +347,13 @@ export function createTerminalManager(
           await createTerminal({
             id: terminalId,
             cwd: options.cwd,
-            ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+            workspaceId: options.workspaceId,
             name: options.name ?? defaultName,
             ...(options.title ? { title: options.title } : {}),
             ...(options.command ? { command: options.command } : {}),
             ...(options.args ? { args: options.args } : {}),
+            ...(options.rows !== undefined ? { rows: options.rows } : {}),
+            ...(options.cols !== undefined ? { cols: options.cols } : {}),
             ...(mergedEnv ? { env: mergedEnv } : {}),
             activityEnv,
           }),

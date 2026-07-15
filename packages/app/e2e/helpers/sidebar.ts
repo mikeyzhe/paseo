@@ -7,6 +7,19 @@ export async function selectWorkspaceInSidebar(page: Page, workspaceId: string):
   await row.click();
 }
 
+async function openWorkspaceSidebarKebab(page: Page, workspaceId: string) {
+  const serverId = getServerId();
+  const row = page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceId}`);
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  await row.hover();
+
+  const kebab = page.getByTestId(`sidebar-workspace-kebab-${serverId}:${workspaceId}`);
+  await expect(kebab).toBeVisible({ timeout: 10_000 });
+  await kebab.click();
+
+  return serverId;
+}
+
 export async function expectWorkspaceListed(page: Page, name: string): Promise<void> {
   await expect(
     page.locator('[data-testid^="sidebar-workspace-row-"]').filter({ hasText: name }).first(),
@@ -16,54 +29,21 @@ export async function expectWorkspaceListed(page: Page, name: string): Promise<v
 // The workspace row kebab and its menu items carry no web ARIA role, so the sidebar
 // suite addresses them by the stable test ids the app assigns per workspace — the same
 // convention the rename flow uses. The kebab only reveals on hover.
-export async function archiveWorktreeFromSidebar(page: Page, workspaceId: string): Promise<void> {
-  const serverId = getServerId();
-  const row = page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceId}`);
-  await expect(row).toBeVisible({ timeout: 30_000 });
-  await row.hover();
-
-  const kebab = page.getByTestId(`sidebar-workspace-kebab-${serverId}:${workspaceId}`);
-  await expect(kebab).toBeVisible({ timeout: 10_000 });
-  await kebab.click();
-
-  // A clean worktree archives with no prompt; if the host reports unsynced work the app
-  // raises a browser confirm. Accept it so the user-confirmed archive stays deterministic
-  // either way.
-  page.once("dialog", (dialog) => void dialog.accept());
-
+export async function clickArchiveWorkspaceMenuItem(
+  page: Page,
+  workspaceId: string,
+): Promise<void> {
+  const serverId = await openWorkspaceSidebarKebab(page, workspaceId);
   const archiveItem = page.getByTestId(`sidebar-workspace-menu-archive-${serverId}:${workspaceId}`);
   await expect(archiveItem).toBeVisible({ timeout: 10_000 });
   await archiveItem.click();
-
-  // Archiving the last reference to a worktree opens the keep/delete prompt.
-  // This helper deletes the worktree from disk; callers that want to keep it use
-  // openWorktreeDeletePrompt directly.
-  const deleteButton = page.getByTestId("worktree-delete-confirm-delete");
-  await expect(deleteButton).toBeVisible({ timeout: 10_000 });
-  await deleteButton.click();
 }
 
-// Opens the archive flow for a last-reference worktree and stops at the inline
-// keep/delete prompt, which the caller resolves by clicking keep or delete.
-export async function openWorktreeDeletePrompt(page: Page, workspaceId: string): Promise<void> {
-  const serverId = getServerId();
-  const row = page.getByTestId(`sidebar-workspace-row-${serverId}:${workspaceId}`);
-  await expect(row).toBeVisible({ timeout: 30_000 });
-  await row.hover();
-
-  const kebab = page.getByTestId(`sidebar-workspace-kebab-${serverId}:${workspaceId}`);
-  await expect(kebab).toBeVisible({ timeout: 10_000 });
-  await kebab.click();
-
-  // A dirty/unsynced worktree raises a browser confirm before the prompt; accept
-  // it so the prompt opens deterministically either way.
+export async function archiveWorkspaceFromSidebar(page: Page, workspaceId: string): Promise<void> {
+  // A clean workspace archives with no prompt. Managed worktree backing may raise
+  // a browser confirm for unsynced work, so accept it when present.
   page.once("dialog", (dialog) => void dialog.accept());
-
-  const archiveItem = page.getByTestId(`sidebar-workspace-menu-archive-${serverId}:${workspaceId}`);
-  await expect(archiveItem).toBeVisible({ timeout: 10_000 });
-  await archiveItem.click();
-
-  await expect(page.getByTestId("worktree-delete-confirm-keep")).toBeVisible({ timeout: 10_000 });
+  await clickArchiveWorkspaceMenuItem(page, workspaceId);
 }
 
 export async function expectWorkspaceAbsentFromSidebar(
@@ -81,13 +61,14 @@ export async function openMobileAgentSidebar(page: Page): Promise<void> {
 
 export async function closeMobileAgentSidebar(page: Page): Promise<void> {
   const closeButton = page.getByTestId("sidebar-close");
-  await expect(closeButton).toBeInViewport({ timeout: 5_000 });
-  await closeButton.click({ force: true });
+  await expect(closeButton).toBeInViewport({ ratio: 1, timeout: 5_000 });
+  await closeButton.click();
 }
 
-// The mobile sidebar panel animates via translateX; toBeInViewport reflects the rendered position.
+// The mobile sidebar panel animates via translateX. Waiting for its header to be fully visible
+// prevents a close click from targeting a button while the panel is still moving.
 export async function expectMobileAgentSidebarVisible(page: Page): Promise<void> {
-  await expect(page.getByTestId("sidebar-sessions")).toBeInViewport({ timeout: 5_000 });
+  await expect(page.getByTestId("sidebar-sessions")).toBeInViewport({ ratio: 1, timeout: 5_000 });
 }
 
 export async function expectMobileAgentSidebarHidden(page: Page): Promise<void> {

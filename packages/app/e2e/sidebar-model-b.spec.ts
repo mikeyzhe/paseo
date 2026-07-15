@@ -26,9 +26,7 @@ function projectNewWorktreeIcon(page: Page, projectKey: string) {
 
 async function seedSecondWorkspace(seeded: SeededWorkspace, title: string): Promise<string> {
   const created = await seeded.client.createWorkspace({
-    backing: "local",
-    cwd: seeded.repoPath,
-    projectId: seeded.projectId,
+    source: { kind: "directory", path: seeded.repoPath, projectId: seeded.projectId },
     title,
   });
   if (!created.workspace) {
@@ -40,7 +38,7 @@ async function seedSecondWorkspace(seeded: SeededWorkspace, title: string): Prom
 test.describe("Model B sidebar shape", () => {
   test.describe.configure({ timeout: 180_000 });
 
-  test("git and non-git projects both render as expandable parents; git keeps a per-row new-worktree icon, the global button covers both", async ({
+  test("git and non-git projects both render as expandable parents, both show a per-row New workspace icon, and the global button covers both", async ({
     page,
   }) => {
     const gitProject = await seedWorkspace({ repoPrefix: "model-b-git-" });
@@ -64,14 +62,17 @@ test.describe("Model B sidebar shape", () => {
       await expect(workspaceRow(page, nonGitProject.workspaceId)).toBeVisible({ timeout: 30_000 });
       await expect(workspaceRow(page, nonGitSecondId)).toBeVisible({ timeout: 30_000 });
 
-      // The per-project "+ New workspace" row is gone. The git project keeps a
-      // per-row new-worktree icon (revealed on hover); the non-git project has
-      // none, since worktree creation needs a git checkout.
+      // Both projects show a per-row New workspace icon (revealed on hover): the
+      // git project can branch off a worktree, and the non-git project can add
+      // another workspace because the host supports workspaceMultiplicity.
       await projectRow(page, gitProject.projectId).hover();
       await expect(projectNewWorktreeIcon(page, gitProject.projectId)).toBeVisible({
         timeout: 30_000,
       });
-      await expect(projectNewWorktreeIcon(page, nonGitProject.projectId)).toHaveCount(0);
+      await projectRow(page, nonGitProject.projectId).hover();
+      await expect(projectNewWorktreeIcon(page, nonGitProject.projectId)).toBeVisible({
+        timeout: 30_000,
+      });
 
       // The global new-workspace button is the universal entry — present for both
       // kinds regardless of their per-row affordance.
@@ -129,7 +130,7 @@ test.describe("Model B sidebar shape", () => {
       await expect(workspaceRow(page, idleProject.workspaceId)).toBeVisible({ timeout: 30_000 });
 
       // Switch to status grouping.
-      await page.getByTestId("sidebar-grouping-selector").click();
+      await page.getByTestId("sidebar-display-preferences-menu").click();
       await page.getByTestId("sidebar-grouping-status").click();
 
       const sidebar = page.getByTestId("sidebar-sessions").filter({ visible: true }).first();

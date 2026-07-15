@@ -25,12 +25,18 @@ import {
   selectBranchInPicker,
   selectGitHubPrInPicker,
   selectPickerOptionByKeyboard,
-  selectWorkspaceBacking,
+  selectWorkspaceIsolation,
   submitNewWorkspacePrompt,
 } from "./helpers/new-workspace";
 import { createTempGitRepo, readWorktreeBranchInfo } from "./helpers/workspace";
-import { createTempGithubRepo, hasGithubAuth } from "./helpers/github-fixtures";
+import {
+  cloneGithubRepoDefaultBranchOnly,
+  createTempGithubRepo,
+  hasGithubAuth,
+} from "./helpers/github-fixtures";
 import { getServerId } from "./helpers/server-id";
+import { getE2EDaemonPort } from "./helpers/daemon-port";
+import { seedSavedSettingsHosts } from "./helpers/settings";
 import {
   expectSidebarWorkspaceSelected,
   expectWorkspaceHeader,
@@ -48,7 +54,7 @@ interface WorkspaceStatusGroupEvent {
 }
 
 async function switchSidebarToStatusGrouping(page: import("@playwright/test").Page) {
-  await page.getByTestId("sidebar-grouping-selector").click();
+  await page.getByTestId("sidebar-display-preferences-menu").click();
   await page.getByTestId("sidebar-grouping-status").click();
   await expect(page.getByTestId("sidebar-status-group-done")).toBeVisible({ timeout: 30_000 });
 }
@@ -203,6 +209,53 @@ test.describe("New workspace flow", () => {
     createdWorktreeDirectories.clear();
     localWorkspaceIds.clear();
     await client?.close().catch(() => undefined);
+  });
+
+  test("adds a project from the selected empty host", async ({ page }) => {
+    const repo = await createTempGitRepo("new-workspace-project-picker-");
+    const primaryServerId = getServerId();
+    const emptyServerId = "empty-new-workspace-host";
+
+    try {
+      const openedProject = await openProjectViaDaemon(client, repo.path);
+      localWorkspaceIds.add(openedProject.workspaceId);
+      await seedSavedSettingsHosts(page, [
+        {
+          serverId: primaryServerId,
+          label: "Primary host",
+          endpoint: `127.0.0.1:${getE2EDaemonPort()}`,
+        },
+        {
+          serverId: emptyServerId,
+          label: "Empty host",
+          endpoint: "127.0.0.1:9",
+        },
+      ]);
+
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await openGlobalNewWorkspaceComposer(page);
+
+      const projectTrigger = page.getByTestId("new-workspace-project-picker-trigger");
+      await projectTrigger.click();
+      await page.getByPlaceholder("Search projects").fill("no matching project");
+      await expect(page.getByTestId("new-workspace-project-picker-add-project")).toBeVisible();
+      await page.keyboard.press("Escape");
+
+      await page.getByTestId("host-picker-trigger").click();
+      await page.getByTestId(`new-workspace-host-picker-option-${emptyServerId}`).click();
+      await expect(projectTrigger).toContainText("Choose project");
+      await projectTrigger.click();
+
+      const addProject = page.getByTestId("new-workspace-project-picker-add-project");
+      await expect(addProject).toContainText("Add project");
+      await expect(addProject).toContainText(/(?:⌘|Ctrl\+)O/);
+      await addProject.click();
+
+      await expect(page.getByTestId("project-picker-input")).toBeVisible();
+    } finally {
+      await repo.cleanup();
+    }
   });
 
   test("sidebar workspace navigation updates URL and header", async ({ page }) => {
@@ -633,7 +686,7 @@ test.describe("New workspace flow", () => {
         projectKey: openedProject.projectKey,
         projectDisplayName: openedProject.projectDisplayName,
       });
-      await selectWorkspaceBacking(page, "worktree");
+      await selectWorkspaceIsolation(page, "worktree");
       await openStartingRefPicker(page);
       await selectBranchInPicker(page, "dev");
 
@@ -679,7 +732,7 @@ test.describe("New workspace flow", () => {
         projectKey: openedProject.projectKey,
         projectDisplayName: openedProject.projectDisplayName,
       });
-      await selectWorkspaceBacking(page, "worktree");
+      await selectWorkspaceIsolation(page, "worktree");
 
       await openBranchPicker(page);
       await expectPickerOpen(page);
@@ -704,7 +757,7 @@ test.describe("New workspace flow", () => {
         projectKey: openedProject.projectKey,
         projectDisplayName: openedProject.projectDisplayName,
       });
-      await selectWorkspaceBacking(page, "worktree");
+      await selectWorkspaceIsolation(page, "worktree");
 
       await openBranchPicker(page);
       await expectPickerOpen(page);
@@ -734,7 +787,7 @@ test.describe("New workspace flow", () => {
         projectKey: openedProject.projectKey,
         projectDisplayName: openedProject.projectDisplayName,
       });
-      await selectWorkspaceBacking(page, "worktree");
+      await selectWorkspaceIsolation(page, "worktree");
       await openStartingRefPicker(page);
       await selectGitHubPrInPicker(page, pr.number);
 
@@ -748,6 +801,52 @@ test.describe("New workspace flow", () => {
         title: pr.title,
       });
     } finally {
+      await ghRepo.cleanup();
+    }
+  });
+
+  test("selected GitHub PR creates the worktree from the PR head even when the head branch is not fetched", async ({
+    page,
+  }) => {
+    test.skip(!hasGithubAuth(), "Requires GitHub authentication (gh auth login)");
+
+    const ghRepo = await createTempGithubRepo({
+      category: "new-workspace-pr-worktree",
+      prs: [{ title: "Checkout PR worktree", state: "open" }],
+    });
+    const pr = ghRepo.prs[0]!;
+    const mainCheckout = await cloneGithubRepoDefaultBranchOnly(ghRepo);
+
+    try {
+      const openedProject = await openProjectViaDaemon(client, mainCheckout.path);
+      localWorkspaceIds.add(openedProject.workspaceId);
+
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await openNewWorkspaceComposer(page, {
+        projectKey: openedProject.projectKey,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
+      await selectWorkspaceIsolation(page, "worktree");
+      await openStartingRefPicker(page);
+      await selectGitHubPrInPicker(page, pr.number);
+      await submitNewWorkspaceWithoutPrompt(page);
+
+      const worktree = await assertNewWorkspaceSidebarAndHeader(page, {
+        serverId: getServerId(),
+        client,
+        previousWorkspaceId: openedProject.workspaceId,
+        projectDisplayName: openedProject.projectDisplayName,
+      });
+      createdWorktreeDirectories.add(worktree.workspaceDirectory);
+
+      const branchInfo = await readWorktreeBranchInfo({
+        worktreePath: worktree.workspaceDirectory,
+      });
+      expect(branchInfo.currentBranch).toBe(pr.branch);
+      expect(existsSync(path.join(worktree.workspaceDirectory, "pr-1.txt"))).toBe(true);
+    } finally {
+      await mainCheckout.cleanup();
       await ghRepo.cleanup();
     }
   });

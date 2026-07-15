@@ -1,4 +1,5 @@
 import { expect, it, test, vi } from "vitest";
+import pino, { type Logger } from "pino";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
@@ -10,6 +11,127 @@ import {
   setupFinishNotification,
 } from "./agent-prompt.js";
 import type { AgentManagerEvent, ManagedAgent } from "./agent-manager.js";
+
+interface CapturedLogger {
+  logger: Logger;
+  records: Array<Record<string, unknown>>;
+  nextRecord: Promise<void>;
+}
+
+function createCapturedLogger(): CapturedLogger {
+  const records: Array<Record<string, unknown>> = [];
+  let resolveNextRecord!: () => void;
+  const nextRecord = new Promise<void>((resolve) => {
+    resolveNextRecord = resolve;
+  });
+  const logger = pino(
+    { level: "error" },
+    {
+      write(line: string) {
+        records.push(JSON.parse(line) as Record<string, unknown>);
+        resolveNextRecord();
+      },
+    },
+  );
+  return { logger, records, nextRecord };
+}
+
+interface FinishNotificationScenarioOptions {
+  childLastAssistantMessage?: string | null;
+  parentPromptError?: Error;
+  logger?: Logger;
+}
+
+interface FinishNotificationScenario {
+  startWatchingChild(): void;
+  finishChildAndReadParentPrompt(): Promise<string>;
+}
+
+function createFinishNotificationScenario(
+  options?: FinishNotificationScenarioOptions,
+): FinishNotificationScenario {
+  let subscriber: ((event: AgentManagerEvent) => void) | null = null;
+  let resolveParentPrompt: ((prompt: string) => void) | null = null;
+
+  const childAgent: ManagedAgent = Object.create(null);
+  Reflect.set(childAgent, "id", "child-agent");
+  Reflect.set(childAgent, "lifecycle", "idle");
+  Reflect.set(childAgent, "config", { title: "Child Agent" });
+
+  const callerAgent: ManagedAgent = Object.create(null);
+  Reflect.set(callerAgent, "id", "caller-agent");
+  Reflect.set(callerAgent, "lifecycle", "idle");
+  Reflect.set(callerAgent, "config", { title: "Caller Agent" });
+
+  const agentManager: AgentManager = Object.create(AgentManager.prototype);
+  Reflect.set(agentManager, "getAgent", (agentId: string) => {
+    if (agentId === "child-agent") {
+      return childAgent;
+    }
+    if (agentId === "caller-agent") {
+      return callerAgent;
+    }
+    return null;
+  });
+  Reflect.set(agentManager, "subscribe", (callback: (event: AgentManagerEvent) => void) => {
+    subscriber = callback;
+    return () => {
+      subscriber = null;
+    };
+  });
+  Reflect.set(agentManager, "getLastAssistantMessage", async () => {
+    return options?.childLastAssistantMessage ?? null;
+  });
+  Reflect.set(agentManager, "tryRunOutOfBand", () => false);
+  Reflect.set(agentManager, "hasInFlightRun", () => Boolean(options?.parentPromptError));
+  Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
+    resolveParentPrompt?.(prompt);
+    return (async function* noop() {})();
+  });
+  Reflect.set(agentManager, "replaceAgentRun", async (_agentId: string, prompt: string) => {
+    resolveParentPrompt?.(prompt);
+    throw options?.parentPromptError;
+  });
+
+  const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
+  Reflect.set(agentStorage, "get", async (agentId: string) => {
+    if (agentId === "child-agent") {
+      return { title: "Child Agent" };
+    }
+    return null;
+  });
+
+  return {
+    startWatchingChild() {
+      setupFinishNotification({
+        agentManager,
+        agentStorage,
+        childAgentId: "child-agent",
+        callerAgentId: "caller-agent",
+        logger: options?.logger ?? createTestLogger(),
+      });
+    },
+    async finishChildAndReadParentPrompt() {
+      const parentPrompt = new Promise<string>((resolve) => {
+        resolveParentPrompt = resolve;
+      });
+
+      childAgent.lifecycle = "running";
+      subscriber?.({
+        type: "agent_state",
+        agent: childAgent,
+      });
+
+      childAgent.lifecycle = "idle";
+      subscriber?.({
+        type: "agent_state",
+        agent: childAgent,
+      });
+
+      return parentPrompt;
+    },
+  };
+}
 
 test("isSystemInjectedEnvelope matches the envelope formatSystemNotificationPrompt produces", () => {
   expect(isSystemInjectedEnvelope(formatSystemNotificationPrompt("child finished"))).toBe(true);
@@ -53,6 +175,43 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
     outputSchema: { type: "object" },
     messageId: "msg-client-1",
   });
+});
+
+test("finish notifications tell the parent the child's last assistant message", async () => {
+  const scenario = createFinishNotificationScenario({
+    childLastAssistantMessage: "Implemented the cleanup and all checks pass.",
+  });
+
+  scenario.startWatchingChild();
+  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
+
+  expect(parentPrompt).toEqual(
+    formatSystemNotificationPrompt(
+      "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>",
+    ),
+  );
+});
+
+test("finish notifications log a rejected parent prompt without an unhandled rejection", async () => {
+  const captured = createCapturedLogger();
+  const scenario = createFinishNotificationScenario({
+    parentPromptError: new Error("parent provider rejected replacement"),
+    logger: captured.logger,
+  });
+
+  scenario.startWatchingChild();
+  await scenario.finishChildAndReadParentPrompt();
+  await captured.nextRecord;
+
+  expect(captured.records).toEqual([
+    expect.objectContaining({
+      msg: "Failed to notify caller agent",
+      childAgentId: "child-agent",
+      callerAgentId: "caller-agent",
+      reason: "finished",
+      err: expect.objectContaining({ message: "parent provider rejected replacement" }),
+    }),
+  ]);
 });
 
 it("does not notify archived callers", async () => {

@@ -28,22 +28,27 @@ function sleep(ms: number): Promise<void> {
 export class TerminalE2EHarness {
   readonly client: SeedDaemonClient;
   readonly tempRepo: TempRepo;
+  readonly projectId: string;
   readonly workspaceId: string;
 
   private constructor(input: {
     client: SeedDaemonClient;
     tempRepo: TempRepo;
+    projectId: string;
     workspaceId: string;
   }) {
     this.client = input.client;
     this.tempRepo = input.tempRepo;
+    this.projectId = input.projectId;
     this.workspaceId = input.workspaceId;
   }
 
   static async create(input: { tempPrefix: string }): Promise<TerminalE2EHarness> {
     const tempRepo = await createTempGitRepo(input.tempPrefix);
     const client = await connectSeedClient();
-    const seedResult = await client.openProject(tempRepo.path);
+    const seedResult = await client.createWorkspace({
+      source: { kind: "directory", path: tempRepo.path },
+    });
     if (!seedResult.workspace) {
       await client.close().catch(() => {});
       await tempRepo.cleanup().catch(() => {});
@@ -52,11 +57,13 @@ export class TerminalE2EHarness {
     return new TerminalE2EHarness({
       client,
       tempRepo,
+      projectId: seedResult.workspace.projectId,
       workspaceId: seedResult.workspace.id,
     });
   }
 
   async cleanup(): Promise<void> {
+    await this.client.removeProject(this.projectId).catch(() => {});
     await this.client.close().catch(() => {});
     await this.tempRepo.cleanup().catch(() => {});
   }
@@ -67,8 +74,9 @@ export class TerminalE2EHarness {
         ? {
             command: input.command,
             args: input.args,
+            workspaceId: this.workspaceId,
           }
-        : undefined;
+        : { workspaceId: this.workspaceId };
     const result = await this.client.createTerminal(
       this.tempRepo.path,
       input.name,
@@ -90,7 +98,9 @@ export class TerminalE2EHarness {
     const timeoutMs = input.timeoutMs ?? 10_000;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const result = await this.client.listTerminals(this.tempRepo.path);
+      const result = await this.client.listTerminals(this.tempRepo.path, undefined, {
+        workspaceId: this.workspaceId,
+      });
       const terminal = result.terminals.find((entry) => entry.id === input.terminalId);
       const activity = terminal?.activity ?? null;
       const attentionMatches =

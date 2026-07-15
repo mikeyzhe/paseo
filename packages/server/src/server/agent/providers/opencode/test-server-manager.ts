@@ -1,8 +1,9 @@
 import type { OpenCodeServerAcquisition, OpenCodeServerManagerLike } from "./server-manager.js";
 
 export interface TestOpenCodeServerAcquisition {
-  force: boolean;
+  kind: "current" | "new" | "dedicated" | "existing";
   env?: Record<string, string>;
+  url?: string;
   released: boolean;
 }
 
@@ -16,14 +17,32 @@ export class TestOpenCodeServerManager implements OpenCodeServerManagerLike {
     return this.server;
   }
 
-  async acquire(options: {
-    force: boolean;
+  async acquireCurrent(): Promise<OpenCodeServerAcquisition> {
+    return this.recordAcquisition({ kind: "current" });
+  }
+
+  async acquireNew(): Promise<OpenCodeServerAcquisition> {
+    return this.recordAcquisition({ kind: "new" });
+  }
+
+  async acquireDedicated(env: Record<string, string>): Promise<OpenCodeServerAcquisition> {
+    return this.recordAcquisition({ kind: "dedicated", env });
+  }
+
+  acquireExisting(url: string): OpenCodeServerAcquisition | null {
+    return url === this.server.url ? this.recordAcquisition({ kind: "existing", url }) : null;
+  }
+
+  private recordAcquisition(input: {
+    kind: TestOpenCodeServerAcquisition["kind"];
     env?: Record<string, string>;
-  }): Promise<OpenCodeServerAcquisition> {
+    url?: string;
+  }): OpenCodeServerAcquisition {
     const acquisition: TestOpenCodeServerAcquisition = {
-      force: options.force,
-      env: options.env,
+      kind: input.kind,
       released: false,
+      ...(input.env ? { env: input.env } : {}),
+      ...(input.url ? { url: input.url } : {}),
     };
     this.acquisitions.push(acquisition);
     return {
@@ -33,6 +52,8 @@ export class TestOpenCodeServerManager implements OpenCodeServerManagerLike {
       },
     };
   }
+
+  async shutdown(): Promise<void> {}
 }
 
 export function createTestOpenCodeServerManager(): TestOpenCodeServerManager {

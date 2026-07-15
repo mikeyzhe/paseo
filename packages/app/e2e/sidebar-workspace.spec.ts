@@ -132,6 +132,25 @@ test.describe("Sidebar workspace list", () => {
       await workspace.cleanup();
     }
   });
+
+  test("workspace hover card shows host as metadata", async ({ page }) => {
+    const workspace = await seedWorkspace({ repoPrefix: "sidebar-hover-host-" });
+
+    try {
+      await gotoAppShell(page);
+      await waitForSidebarProject(page, path.basename(workspace.repoPath));
+
+      const row = await waitForSidebarWorkspace(page, workspace.workspaceId);
+      await row.hover();
+
+      const hoverCard = page.getByTestId("workspace-hover-card");
+      await expect(hoverCard).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("hover-card-workspace-host")).toHaveText("localhost");
+      await expect(hoverCard).not.toContainText(/\b(Online|Connecting|Offline|Error|Idle)\b/);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
 });
 
 test.describe("Mobile sidebar panelState transition", () => {
@@ -144,5 +163,48 @@ test.describe("Mobile sidebar panelState transition", () => {
     await expectMobileAgentSidebarVisible(page);
     await closeMobileAgentSidebar(page);
     await expectMobileAgentSidebarHidden(page);
+  });
+});
+
+test.describe("Half-screen desktop layout", () => {
+  test.use({ viewport: { width: 751, height: 982 } });
+
+  test("keeps the pinned sidebar at half of a 14-inch Mac display", async ({ page }) => {
+    await gotoAppShell(page);
+    await expect(page.getByTestId("sidebar-global-new-workspace")).toBeVisible();
+    await expect(page.getByTestId("agent-list-backdrop")).not.toBeVisible();
+  });
+
+  test("yields app navigation to the settings split", async ({ page }) => {
+    await gotoAppShell(page);
+    await page.getByTestId("sidebar-settings").click();
+
+    await expect(page.getByTestId("settings-sidebar")).toBeVisible();
+    await expect(page.getByTestId("settings-detail-pane")).toBeVisible();
+    await expect(page.getByTestId("sidebar-settings")).not.toBeVisible();
+  });
+
+  test("yields app navigation to the Explorer", async ({ page }) => {
+    const workspace = await seedWorkspace({ repoPrefix: "sidebar-half-screen-explorer-" });
+
+    try {
+      await gotoAppShell(page);
+      await waitForSidebarProject(page, path.basename(workspace.repoPath));
+      await openWorkspaceFromSidebar(page, workspace.workspaceId);
+
+      await page.getByTestId("workspace-explorer-toggle").first().click();
+      await expect(
+        page.getByTestId("explorer-tab-files").filter({ visible: true }).first(),
+      ).toBeVisible();
+      await expect(page.getByTestId("sidebar-global-new-workspace")).not.toBeVisible();
+      await expect
+        .poll(
+          async () =>
+            (await page.getByTestId("workspace-tabs-row").first().boundingBox())?.width ?? 0,
+        )
+        .toBeGreaterThanOrEqual(400);
+    } finally {
+      await workspace.cleanup();
+    }
   });
 });

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import Ajv, { type ErrorObject, type Options as AjvOptions } from "ajv";
 import type { AgentProvider, AgentSessionConfig } from "./agent-sdk-types.js";
 import type { AgentManager } from "./agent-manager.js";
@@ -106,16 +105,19 @@ interface SchemaValidator<T> {
   validate: (value: unknown) => { ok: true; value: T } | { ok: false; errors: string[] };
 }
 
-function isZodSchema(value: unknown): value is z.ZodTypeAny {
-  return typeof (value as z.ZodTypeAny | undefined)?.safeParse === "function";
+function isZodSchema(value: unknown): value is z.ZodType {
+  return typeof (value as z.ZodType | undefined)?.safeParse === "function";
 }
 
-function buildZodValidator<T>(schema: z.ZodTypeAny, schemaName: string): SchemaValidator<T> {
-  const zodToJsonSchemaAny = zodToJsonSchema as unknown as (
-    input: z.ZodTypeAny,
-    name?: string,
-  ) => JsonSchema;
-  const jsonSchema = zodToJsonSchemaAny(schema, schemaName);
+function buildZodValidator<T>(schema: z.ZodType, schemaName: string): SchemaValidator<T> {
+  const jsonSchema = z.toJSONSchema(schema, {
+    target: "draft-07",
+    unrepresentable: "any",
+    io: "input",
+  }) as JsonSchema;
+  if (typeof jsonSchema.title !== "string") {
+    jsonSchema.title = schemaName;
+  }
   return {
     jsonSchema,
     validate: (value) => {
@@ -178,6 +180,15 @@ function buildBasePrompt(prompt: string, jsonSchema: JsonSchema): string {
     "You must respond with JSON only that matches this JSON Schema:",
     schemaText,
   ].join("\n");
+}
+
+export function buildStructuredAgentResponsePrompt(options: {
+  prompt: string;
+  schema: z.ZodType | JsonSchema;
+  schemaName?: string;
+}): string {
+  const validator = buildValidator(options.schema, options.schemaName ?? "Response");
+  return buildBasePrompt(options.prompt, validator.jsonSchema);
 }
 
 function buildRetryPrompt(basePrompt: string, errors: string[]): string {
@@ -345,7 +356,10 @@ export async function generateStructuredAgentResponse<T>(
 ): Promise<T> {
   const { manager, agentConfig, agentId, persistSession, prompt, schema, maxRetries, schemaName } =
     options;
-  const agent = await manager.createAgent(agentConfig, agentId, { persistSession });
+  const agent = await manager.createAgent(agentConfig, agentId, {
+    persistSession,
+    workspaceId: undefined,
+  });
   try {
     const caller: AgentCaller = async (nextPrompt) => {
       const result = await manager.runAgent(agent.id, nextPrompt);
@@ -403,13 +417,11 @@ export async function generateStructuredAgentResponseWithFallback<T>(
   const runStructured =
     runner ??
     ((input: StructuredAgentGenerationOptions<T>) => generateStructuredAgentResponse<T>(input));
-  const availability = await manager.listProviderAvailability();
-  const availabilityByProvider = new Map(availability.map((entry) => [entry.provider, entry]));
   const attempts: StructuredGenerationAttempt[] = [];
 
   for (const candidate of providers) {
-    const availabilityEntry = availabilityByProvider.get(candidate.provider);
-    if (availabilityEntry && !availabilityEntry.available) {
+    const availabilityEntry = await manager.getProviderAvailability(candidate.provider);
+    if (!availabilityEntry.available) {
       const reason = availabilityEntry.error ?? "unavailable";
       attempts.push({
         provider: candidate.provider,

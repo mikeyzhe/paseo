@@ -4,6 +4,7 @@ import {
   RecentProviderSessionDescriptorPayloadSchema,
   SessionInboundMessageSchema,
   SessionOutboundMessageSchema,
+  WorkspaceCreateRequestSchema,
   WorkspaceDescriptorPayloadSchema,
   WorkspaceScriptPayloadSchema,
 } from "./messages.js";
@@ -24,6 +25,50 @@ describe("workspace message schemas", () => {
     });
 
     expect(parsed.type).toBe("fetch_workspaces_request");
+  });
+
+  test("parses project.add request and response", () => {
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "project.add.request",
+        requestId: "req-add-project",
+        cwd: "/repo",
+      }),
+    ).toEqual({
+      type: "project.add.request",
+      requestId: "req-add-project",
+      cwd: "/repo",
+    });
+
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "project.add.response",
+        payload: {
+          requestId: "req-add-project",
+          project: {
+            projectId: "/repo",
+            projectDisplayName: "repo",
+            projectCustomName: null,
+            projectRootPath: "/repo",
+            projectKind: "git",
+          },
+          error: null,
+        },
+      }),
+    ).toEqual({
+      type: "project.add.response",
+      payload: {
+        requestId: "req-add-project",
+        project: {
+          projectId: "/repo",
+          projectDisplayName: "repo",
+          projectCustomName: null,
+          projectRootPath: "/repo",
+          projectKind: "git",
+        },
+        error: null,
+      },
+    });
   });
 
   test("parses active-scoped fetch_agents_request as an optional extension", () => {
@@ -239,6 +284,67 @@ describe("workspace message schemas", () => {
     });
 
     expect(parsed.type).toBe("open_project_request");
+  });
+
+  test("parses workspace GitHub clone request and response repo paths", () => {
+    const request = SessionInboundMessageSchema.parse({
+      type: "workspace.github.clone.request",
+      repo: "a/b",
+      cloneProtocol: "https",
+      targetDirectory: "~/workspace",
+      requestId: "req-clone",
+    });
+    const response = SessionOutboundMessageSchema.parse({
+      type: "workspace.github.clone.response",
+      payload: {
+        requestId: "req-clone",
+        repo: "a/b",
+        checkoutPath: "/tmp/b",
+        workspace: null,
+        error: null,
+      },
+    });
+
+    expect(request.type).toBe("workspace.github.clone.request");
+    if (request.type !== "workspace.github.clone.request") {
+      throw new Error("expected workspace.github.clone.request");
+    }
+    expect(request.cloneProtocol).toBe("https");
+    expect(response.type).toBe("workspace.github.clone.response");
+  });
+
+  test("rejects invalid workspace GitHub clone protocols", () => {
+    const request = SessionInboundMessageSchema.safeParse({
+      type: "workspace.github.clone.request",
+      repo: "a/b",
+      cloneProtocol: "ftp",
+      targetDirectory: "~/workspace",
+      requestId: "req-clone",
+    });
+
+    expect(request.success).toBe(false);
+  });
+
+  test("rejects workspace GitHub clone repo paths shorter than owner slash repo", () => {
+    const request = SessionInboundMessageSchema.safeParse({
+      type: "workspace.github.clone.request",
+      repo: "ab",
+      targetDirectory: "~/workspace",
+      requestId: "req-clone",
+    });
+    const response = SessionOutboundMessageSchema.safeParse({
+      type: "workspace.github.clone.response",
+      payload: {
+        requestId: "req-clone",
+        repo: "ab",
+        checkoutPath: null,
+        workspace: null,
+        error: "failed",
+      },
+    });
+
+    expect(request.success).toBe(false);
+    expect(response.success).toBe(false);
   });
 
   test("parses legacy editor RPC messages for compatibility", () => {
@@ -865,5 +971,43 @@ describe("workspace message schemas", () => {
 
     const checkout = result.data.payload.entries[0]?.project.checkout;
     expect(checkout?.worktreeRoot).toBe("C:\\repo");
+  });
+
+  test("workspace.create.request rejects old flat backing shape and accepts new source envelope", () => {
+    // Old flat shape with backing enum must be rejected.
+    const oldFlat = WorkspaceCreateRequestSchema.safeParse({
+      type: "workspace.create.request",
+      requestId: "req-old",
+      backing: "worktree",
+      cwd: "/tmp/repo",
+      branch: "feat/my-feature",
+    });
+    expect(oldFlat.success).toBe(false);
+
+    // New envelope shape with source discriminated union must be accepted.
+    const newWorktree = WorkspaceCreateRequestSchema.parse({
+      type: "workspace.create.request",
+      requestId: "req-worktree",
+      source: {
+        kind: "worktree",
+        cwd: "/tmp/repo",
+        action: "checkout",
+        refName: "feat/my-feature",
+      },
+    });
+    expect(newWorktree.type).toBe("workspace.create.request");
+    expect(newWorktree.source.kind).toBe("worktree");
+
+    // Directory source must also be accepted.
+    const newDirectory = WorkspaceCreateRequestSchema.parse({
+      type: "workspace.create.request",
+      requestId: "req-dir",
+      source: {
+        kind: "directory",
+        path: "/tmp/repo",
+      },
+    });
+    expect(newDirectory.type).toBe("workspace.create.request");
+    expect(newDirectory.source.kind).toBe("directory");
   });
 });

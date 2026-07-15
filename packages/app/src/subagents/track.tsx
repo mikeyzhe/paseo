@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
 import { Pressable, ScrollView, Text, View, type PressableStateCallbackType } from "react-native";
 import { useTranslation } from "react-i18next";
-import { Archive, ChevronDown, ChevronRight } from "lucide-react-native";
+import { Archive, ChevronDown, ChevronRight, Unlink } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { getProviderIcon } from "@/components/provider-icons";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -18,6 +18,7 @@ import { buildSubagentRowPresentationData, formatHeaderLabel } from "./track-pre
 const ThemedArchive = withUnistyles(Archive);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedChevronRight = withUnistyles(ChevronRight);
+const ThemedUnlink = withUnistyles(Unlink);
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -27,7 +28,9 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
 export interface SubagentsTrackProps {
   rows: SubagentRow[];
   onOpenSubagent: (id: string) => void;
+  onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
   onArchiveSubagent: (id: string) => void;
+  onDetachSubagent?: (id: string) => void;
 }
 
 const SUBAGENTS_LIST_MAX_HEIGHT = 200;
@@ -42,7 +45,9 @@ function buildRowPresentation(row: SubagentRow): WorkspaceTabPresentation {
 export function SubagentsTrack({
   rows,
   onOpenSubagent,
+  onOpenProviderSubagent,
   onArchiveSubagent,
+  onDetachSubagent,
 }: SubagentsTrackProps): ReactElement | null {
   const [expanded, setExpanded] = useState(false);
 
@@ -102,7 +107,9 @@ export function SubagentsTrack({
                   key={row.id}
                   row={row}
                   onOpenSubagent={onOpenSubagent}
+                  onOpenProviderSubagent={onOpenProviderSubagent}
                   onArchiveSubagent={onArchiveSubagent}
+                  onDetachSubagent={onDetachSubagent}
                 />
               ))}
             </ScrollView>
@@ -116,13 +123,17 @@ export function SubagentsTrack({
 interface SubagentsTrackRowProps {
   row: SubagentRow;
   onOpenSubagent: (id: string) => void;
+  onOpenProviderSubagent: (parentAgentId: string, subagentId: string) => void;
   onArchiveSubagent: (id: string) => void;
+  onDetachSubagent?: (id: string) => void;
 }
 
 function SubagentsTrackRow({
   row,
   onOpenSubagent,
+  onOpenProviderSubagent,
   onArchiveSubagent,
+  onDetachSubagent,
 }: SubagentsTrackRowProps): ReactElement {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
@@ -131,15 +142,22 @@ function SubagentsTrackRow({
   const displayLabel =
     presentation.titleState === "loading" ? t("common.states.loading") : presentation.label;
   const handlePress = useCallback(() => {
-    onOpenSubagent(row.id);
-  }, [onOpenSubagent, row.id]);
+    if (row.kind === "provider") {
+      onOpenProviderSubagent(row.parentAgentId, row.id);
+    } else {
+      onOpenSubagent(row.id);
+    }
+  }, [onOpenProviderSubagent, onOpenSubagent, row]);
   const handleArchivePress = useCallback(() => {
     onArchiveSubagent(row.id);
   }, [onArchiveSubagent, row.id]);
+  const handleDetachPress = useCallback(() => {
+    onDetachSubagent?.(row.id);
+  }, [onDetachSubagent, row.id]);
   const handlePointerEnter = useCallback(() => setHovered(true), []);
   const handlePointerLeave = useCallback(() => setHovered(false), []);
-  const archiveAlwaysVisible = isNative || isCompact;
-  const archiveVisible = archiveAlwaysVisible || hovered;
+  const actionsAlwaysVisible = isNative || isCompact;
+  const actionsVisible = actionsAlwaysVisible || hovered;
 
   return (
     // Wrapper View handles hover so moving the pointer between the row and
@@ -158,12 +176,15 @@ function SubagentsTrackRow({
             <Text style={styles.rowLabel} numberOfLines={1}>
               {displayLabel}
             </Text>
-            <SubagentArchiveButton
-              rowId={row.id}
-              displayLabel={displayLabel}
-              visible={archiveVisible}
-              onPress={handleArchivePress}
-            />
+            {row.kind === "paseo" ? (
+              <SubagentRowActions
+                rowId={row.id}
+                displayLabel={displayLabel}
+                visible={actionsVisible}
+                onDetachPress={onDetachSubagent ? handleDetachPress : undefined}
+                onArchivePress={handleArchivePress}
+              />
+            ) : null}
           </View>
         )}
       </Pressable>
@@ -171,46 +192,90 @@ function SubagentsTrackRow({
   );
 }
 
-function SubagentArchiveButton({
+function SubagentRowActions({
   rowId,
   displayLabel,
   visible,
-  onPress,
+  onDetachPress,
+  onArchivePress,
 }: {
   rowId: string;
   displayLabel: string;
   visible: boolean;
-  onPress: () => void;
+  onDetachPress?: () => void;
+  onArchivePress: () => void;
 }): ReactElement {
   const { t } = useTranslation();
   return (
     <View
-      style={visible ? styles.archiveSlotVisible : styles.archiveSlotHidden}
+      style={visible ? styles.actionClusterVisible : styles.actionClusterHidden}
       pointerEvents={visible ? "auto" : "none"}
     >
-      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-        <TooltipTrigger asChild disabled={!visible}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("subagents.archiveAction", { label: displayLabel })}
-            testID={`subagents-track-archive-${rowId}`}
-            onPress={onPress}
-            style={styles.archiveButton}
-            hitSlop={8}
-          >
-            {({ hovered, pressed }) => (
-              <ThemedArchive
-                size={14}
-                uniProps={hovered || pressed ? foregroundColorMapping : foregroundMutedColorMapping}
-              />
-            )}
-          </Pressable>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="center" offset={8}>
-          <Text style={styles.tooltipText}>{t("subagents.archiveTooltip")}</Text>
-        </TooltipContent>
-      </Tooltip>
+      {onDetachPress ? (
+        <SubagentActionButton
+          accessibilityLabel={t("subagents.detachAction", { label: displayLabel })}
+          testID={`subagents-track-detach-${rowId}`}
+          tooltipLabel={t("subagents.detachTooltip")}
+          icon="detach"
+          visible={visible}
+          onPress={onDetachPress}
+        />
+      ) : null}
+      <SubagentActionButton
+        accessibilityLabel={t("subagents.archiveAction", { label: displayLabel })}
+        testID={`subagents-track-archive-${rowId}`}
+        tooltipLabel={t("subagents.archiveTooltip")}
+        icon="archive"
+        visible={visible}
+        onPress={onArchivePress}
+      />
     </View>
+  );
+}
+
+type SubagentActionIcon = "archive" | "detach";
+
+function renderSubagentActionIcon(icon: SubagentActionIcon, isActive: boolean): ReactElement {
+  const uniProps = isActive ? foregroundColorMapping : foregroundMutedColorMapping;
+  if (icon === "detach") {
+    return <ThemedUnlink size={14} uniProps={uniProps} />;
+  }
+  return <ThemedArchive size={14} uniProps={uniProps} />;
+}
+
+function SubagentActionButton({
+  accessibilityLabel,
+  testID,
+  tooltipLabel,
+  icon,
+  visible,
+  onPress,
+}: {
+  accessibilityLabel: string;
+  testID: string;
+  tooltipLabel: string;
+  icon: SubagentActionIcon;
+  visible: boolean;
+  onPress: () => void;
+}): ReactElement {
+  return (
+    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger asChild disabled={!visible}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          testID={testID}
+          onPress={onPress}
+          style={styles.actionButton}
+          hitSlop={8}
+        >
+          {({ hovered, pressed }) => renderSubagentActionIcon(icon, hovered || pressed)}
+        </Pressable>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center" offset={8}>
+        <Text style={styles.tooltipText}>{tooltipLabel}</Text>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -288,13 +353,19 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foreground,
   },
-  archiveSlotVisible: {
+  actionClusterVisible: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
     opacity: 1,
   },
-  archiveSlotHidden: {
+  actionClusterHidden: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
     opacity: 0,
   },
-  archiveButton: {
+  actionButton: {
     padding: theme.spacing[1],
     alignItems: "center",
     justifyContent: "center",

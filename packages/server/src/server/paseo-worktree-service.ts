@@ -21,10 +21,12 @@ import { validateBranchSlug, type WorktreeConfig } from "../utils/worktree.js";
 import { getCurrentBranch, localBranchExists, renameCurrentBranch } from "../utils/checkout-git.js";
 import {
   markPaseoWorktreeFirstAgentBranchAutoNameAttempted,
+  normalizeBaseRefName,
   readPaseoWorktreeMetadata,
   writePaseoWorktreeFirstAgentBranchAutoNameMetadata,
 } from "../utils/worktree-metadata.js";
 import type { WorktreeCreationIntent } from "./resolve-worktree-creation-intent.js";
+import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import { buildAgentBranchNameSeed } from "./agent/prompt-attachments.js";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
@@ -70,6 +72,8 @@ export async function createPaseoWorktree(
     projectId: input.projectId,
     repoRoot: createdWorktree.repoRoot,
     worktree: createdWorktree.worktree,
+    baseBranch: resolveIntentBaseBranch(createdWorktree.intent),
+    title: resolveFirstAgentPromptTitle(input.firstAgentContext),
     deps,
   });
 
@@ -195,11 +199,26 @@ function maybeMarkFirstAgentBranchAutoNameEligible(options: {
   });
 }
 
+// The base branch is normalized to match worktree.json's baseRefName (origin/
+// stripped). checkout-branch worktrees have no distinct base, so they stay null.
+function resolveIntentBaseBranch(intent: WorktreeCreationIntent): string | null {
+  switch (intent.kind) {
+    case "branch-off":
+      return normalizeBaseRefName(intent.baseBranch);
+    case "checkout-github-pr":
+      return normalizeBaseRefName(intent.baseRefName);
+    case "checkout-branch":
+      return null;
+  }
+}
+
 async function upsertWorkspaceForWorktree(options: {
   inputCwd: string;
   projectId?: string;
   repoRoot: string;
   worktree: WorktreeConfig;
+  baseBranch?: string | null;
+  title?: string | null;
   deps: Pick<
     CreatePaseoWorktreeDeps,
     "projectRegistry" | "workspaceRegistry" | "workspaceGitService"
@@ -240,6 +259,9 @@ async function upsertWorkspaceForWorktree(options: {
     cwd: normalizedCwd,
     kind: "worktree",
     displayName: options.worktree.branchName || normalizedCwd,
+    branch: options.worktree.branchName || null,
+    baseBranch: options.baseBranch ?? null,
+    title: options.title ?? null,
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
@@ -274,12 +296,19 @@ export async function createLocalCheckoutWorkspace(
   await deps.projectRegistry.upsert(projectRecord);
 
   const trimmedTitle = options.title?.trim();
+  // Persist the live git branch into the dedicated `branch` field so
+  // buildWorkspaceCheckout reports the real branch for directory/local_checkout
+  // workspaces too (it reads workspace.branch). Same source deriveWorkspaceDisplayName
+  // reads. HEAD/detached resolves to null — there is no branch to report.
+  const currentBranch = checkout.currentBranch?.trim() ?? null;
+  const branch = currentBranch && currentBranch.toUpperCase() !== "HEAD" ? currentBranch : null;
   const workspace = createPersistedWorkspaceRecord({
     workspaceId: generateWorkspaceId(),
     projectId: projectRecord.projectId,
     cwd: normalizedCwd,
     kind: membership.workspaceKind,
     displayName: membership.workspaceDisplayName,
+    branch,
     title: trimmedTitle ? trimmedTitle : null,
     createdAt: now,
     updatedAt: now,

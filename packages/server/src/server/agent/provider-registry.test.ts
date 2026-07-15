@@ -1,12 +1,20 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import type { AgentModelDefinition } from "./agent-sdk-types.js";
+import type {
+  AgentClient,
+  AgentFeature,
+  AgentModelDefinition,
+  AgentMode,
+  AgentSessionConfig,
+  ProviderCatalog,
+} from "./agent-sdk-types.js";
 
 const mockState = vi.hoisted(() => {
   interface ConstructorEntry {
     runtimeSettings?: unknown;
     providerParams?: unknown;
+    commandsRpcType?: unknown;
   }
 
   return {
@@ -15,6 +23,11 @@ const mockState = vi.hoisted(() => {
       codex: [] as ConstructorEntry[],
       copilot: [] as ConstructorEntry[],
       cursor: [] as Array<{
+        command: string[];
+        env?: Record<string, string>;
+        providerParams?: unknown;
+      }>,
+      trae: [] as Array<{
         command: string[];
         env?: Record<string, string>;
         providerParams?: unknown;
@@ -30,16 +43,19 @@ const mockState = vi.hoisted(() => {
     },
     isCommandAvailable: vi.fn(async (_command: string) => false),
     runtimeModels: new Map<string, AgentModelDefinition[]>(),
+    cursorListFeaturesConfigs: [] as AgentSessionConfig[],
     reset() {
       this.constructorArgs.claude = [];
       this.constructorArgs.codex = [];
       this.constructorArgs.copilot = [];
       this.constructorArgs.cursor = [];
+      this.constructorArgs.trae = [];
       this.constructorArgs.pi = [];
       this.constructorArgs.genericAcp = [];
       this.isCommandAvailable.mockReset();
       this.isCommandAvailable.mockImplementation(async (_command: string) => false);
       this.runtimeModels.clear();
+      this.cursorListFeaturesConfigs = [];
     },
   };
 });
@@ -76,12 +92,11 @@ vi.mock("./providers/claude/agent.js", () => ({
       throw new Error("not implemented");
     }
 
-    async listModels(): Promise<AgentModelDefinition[]> {
-      return mockState.runtimeModels.get(this.provider) ?? [];
-    }
-
-    async listModes(): Promise<[]> {
-      return [];
+    async fetchCatalog(): Promise<ProviderCatalog> {
+      return {
+        models: mockState.runtimeModels.get(this.provider) ?? [],
+        modes: [],
+      };
     }
 
     async isAvailable(): Promise<boolean> {
@@ -125,12 +140,11 @@ vi.mock("./providers/codex-app-server-agent.js", () => ({
       throw new Error("not implemented");
     }
 
-    async listModels(): Promise<AgentModelDefinition[]> {
-      return mockState.runtimeModels.get(this.provider) ?? [];
-    }
-
-    async listModes(): Promise<[]> {
-      return [];
+    async fetchCatalog(): Promise<ProviderCatalog> {
+      return {
+        models: mockState.runtimeModels.get(this.provider) ?? [],
+        modes: [],
+      };
     }
 
     async isAvailable(): Promise<boolean> {
@@ -176,12 +190,11 @@ vi.mock("./providers/copilot-acp-agent.js", () => ({
       throw new Error("not implemented");
     }
 
-    async listModels(): Promise<AgentModelDefinition[]> {
-      return mockState.runtimeModels.get(this.provider) ?? [];
-    }
-
-    async listModes(): Promise<[]> {
-      return [];
+    async fetchCatalog(): Promise<ProviderCatalog> {
+      return {
+        models: mockState.runtimeModels.get(this.provider) ?? [],
+        modes: [],
+      };
     }
 
     async isAvailable(): Promise<boolean> {
@@ -212,12 +225,20 @@ vi.mock("./providers/pi/agent.js", () => ({
     readonly provider = "pi";
     readonly runtimeSettings?: unknown;
 
-    constructor(options: { runtimeSettings?: unknown; providerParams?: unknown }) {
+    constructor(options: {
+      runtimeSettings?: unknown;
+      providerParams?: unknown;
+      commandsRpcType?: unknown;
+    }) {
       this.runtimeSettings = options.runtimeSettings;
-      mockState.constructorArgs.pi.push({
+      const entry: ConstructorEntry = {
         runtimeSettings: options.runtimeSettings,
         providerParams: options.providerParams,
-      });
+      };
+      if (options.commandsRpcType !== undefined) {
+        entry.commandsRpcType = options.commandsRpcType;
+      }
+      mockState.constructorArgs.pi.push(entry);
     }
 
     async createSession(): Promise<never> {
@@ -228,12 +249,11 @@ vi.mock("./providers/pi/agent.js", () => ({
       throw new Error("not implemented");
     }
 
-    async listModels(): Promise<AgentModelDefinition[]> {
-      return mockState.runtimeModels.get(this.provider) ?? [];
-    }
-
-    async listModes(): Promise<[]> {
-      return [];
+    async fetchCatalog(): Promise<ProviderCatalog> {
+      return {
+        models: mockState.runtimeModels.get(this.provider) ?? [],
+        modes: [],
+      };
     }
 
     async isAvailable(): Promise<boolean> {
@@ -299,12 +319,11 @@ vi.mock("./providers/generic-acp-agent.js", () => ({
       throw new Error("not implemented");
     }
 
-    async listModels(): Promise<AgentModelDefinition[]> {
-      return mockState.runtimeModels.get(this.provider) ?? [];
-    }
-
-    async listModes(): Promise<[]> {
-      return [];
+    async fetchCatalog(): Promise<ProviderCatalog> {
+      return {
+        models: mockState.runtimeModels.get(this.provider) ?? [],
+        modes: [],
+      };
     }
 
     async isAvailable(): Promise<boolean> {
@@ -353,12 +372,77 @@ vi.mock("./providers/cursor-acp-agent.js", () => ({
       throw new Error("not implemented");
     }
 
-    async listModels(): Promise<AgentModelDefinition[]> {
-      return mockState.runtimeModels.get(this.provider) ?? [];
+    async fetchCatalog(): Promise<ProviderCatalog> {
+      return {
+        models: mockState.runtimeModels.get(this.provider) ?? [],
+        modes: [],
+      };
     }
 
-    async listModes(): Promise<[]> {
-      return [];
+    async isAvailable(): Promise<boolean> {
+      return true;
+    }
+
+    async listFeatures(config: AgentSessionConfig): Promise<AgentFeature[]> {
+      mockState.cursorListFeaturesConfigs.push(config);
+      return [
+        {
+          type: "select",
+          id: "fast",
+          label: "Fast",
+          value: "false",
+          options: [{ id: "false", label: "Off" }],
+        },
+      ];
+    }
+  },
+}));
+
+vi.mock("./providers/trae-acp-agent.js", () => ({
+  TraeACPAgentClient: class TraeACPAgentClient {
+    readonly capabilities = {
+      supportsStreaming: true,
+      supportsSessionPersistence: true,
+      supportsDynamicModes: true,
+      supportsMcpServers: true,
+      supportsReasoningStream: true,
+      supportsToolInvocations: true,
+    };
+    readonly provider = "acp";
+    readonly runtimeSettings?: unknown;
+
+    constructor(options: {
+      command: string[];
+      env?: Record<string, string>;
+      providerParams?: unknown;
+    }) {
+      this.runtimeSettings = {
+        command: {
+          mode: "replace",
+          argv: options.command,
+        },
+        env: options.env,
+      };
+      mockState.constructorArgs.trae.push({
+        command: options.command,
+        env: options.env,
+        providerParams: options.providerParams,
+      });
+    }
+
+    async createSession(): Promise<never> {
+      throw new Error("not implemented");
+    }
+
+    async resumeSession(): Promise<never> {
+      throw new Error("not implemented");
+    }
+
+    async fetchCatalog(): Promise<ProviderCatalog> {
+      return {
+        models: mockState.runtimeModels.get(this.provider) ?? [],
+        modes: [],
+      };
     }
 
     async isAvailable(): Promise<boolean> {
@@ -459,6 +543,7 @@ test("OMP is a disabled built-in backed by the Pi adapter", () => {
     providerParams: {
       sessionDir: "~/.omp/agent/sessions",
     },
+    commandsRpcType: "get_available_commands",
   });
 });
 
@@ -489,11 +574,10 @@ test("new provider extending claude appears in registry", () => {
   expect(registry.zai.createClient(logger).provider).toBe("zai");
 });
 
-test("new provider extending pi passes params to the base provider constructor", () => {
+test("built-in OMP override passes params to the Pi adapter constructor", () => {
   const registry = buildProviderRegistry(logger, {
     providerOverrides: {
       omp: {
-        extends: "pi",
         label: "OMP",
         command: ["omp"],
         params: {
@@ -516,6 +600,7 @@ test("new provider extending pi passes params to the base provider constructor",
     providerParams: {
       sessionDir: "~/.omp/agent/sessions",
     },
+    commandsRpcType: "get_available_commands",
   });
 });
 
@@ -623,6 +708,68 @@ test("cursor provider extending acp uses CursorACPAgentClient", () => {
       env: {
         CURSOR_AGENT_LOG: "debug",
       },
+      providerParams: undefined,
+    },
+  ]);
+  expect(mockState.constructorArgs.genericAcp).toEqual([]);
+});
+
+test("wrapped cursor client lists ACP features through the inner provider", async () => {
+  const registry = buildProviderRegistry(logger, {
+    providerOverrides: {
+      cursor: {
+        extends: "acp",
+        label: "Cursor",
+        command: ["cursor-agent", "acp"],
+      },
+    },
+  });
+
+  const client = registry.cursor.createClient(logger);
+
+  await expect(
+    client.listFeatures?.({
+      provider: "cursor",
+      cwd: "/tmp/cursor",
+    }),
+  ).resolves.toEqual([
+    {
+      type: "select",
+      id: "fast",
+      label: "Fast",
+      value: "false",
+      options: [{ id: "false", label: "Off" }],
+    },
+  ]);
+  expect(mockState.cursorListFeaturesConfigs).toEqual([
+    {
+      provider: "acp",
+      cwd: "/tmp/cursor",
+    },
+  ]);
+});
+
+test("traecli provider extending acp uses TraeACPAgentClient", () => {
+  const registry = buildProviderRegistry(logger, {
+    providerOverrides: {
+      traecli: {
+        extends: "acp",
+        label: "TRAE CLI",
+        command: ["traecli", "acp", "serve"],
+      },
+    },
+  });
+
+  expect(registry.traecli.createClient(logger).provider).toBe("traecli");
+  expect(mockState.constructorArgs.trae).toEqual([
+    {
+      command: ["traecli", "acp", "serve"],
+      env: undefined,
+      providerParams: undefined,
+    },
+    {
+      command: ["traecli", "acp", "serve"],
+      env: undefined,
       providerParams: undefined,
     },
   ]);
@@ -800,7 +947,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.codex.fetchModels({
+    const { models } = await registry.codex.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -835,7 +983,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.codex.fetchModels({
+    const { models } = await registry.codex.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -873,7 +1022,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.codex.fetchModels({
+    const { models } = await registry.codex.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -907,7 +1057,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.codex.fetchModels({
+    const { models } = await registry.codex.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -949,7 +1100,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.claude.fetchModels({
+    const { models } = await registry.claude.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -999,7 +1151,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.claude.fetchModels({
+    const { models } = await registry.claude.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -1046,7 +1199,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.codex.fetchModels({
+    const { models } = await registry.codex.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -1085,7 +1239,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.claude.fetchModels({
+    const { models } = await registry.claude.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -1137,7 +1292,8 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.claude.fetchModels({
+    const { models } = await registry.claude.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -1175,7 +1331,8 @@ describe("model merging", () => {
     ]);
 
     const registry = buildProviderRegistry(logger);
-    const models = await registry.claude.fetchModels({
+    const { models } = await registry.claude.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
@@ -1190,7 +1347,7 @@ describe("model merging", () => {
     ]);
   });
 
-  test("built-in createClient().listModels() honors profile model replacement (issue #579)", async () => {
+  test("built-in createClient().fetchCatalog() honors profile model replacement (issue #579)", async () => {
     mockState.runtimeModels.set("codex", [
       {
         provider: "codex",
@@ -1215,16 +1372,17 @@ describe("model merging", () => {
     });
 
     const client = registry.codex.createClient(logger);
-    const models = await client.listModels({
+    const catalog = await client.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
 
-    expect(models.map((model) => model.id)).toEqual(["profile-fast"]);
-    expect(models.find((model) => model.isDefault)?.id).toBe("profile-fast");
+    expect(catalog.models.map((model) => model.id)).toEqual(["profile-fast"]);
+    expect(catalog.models.find((model) => model.isDefault)?.id).toBe("profile-fast");
   });
 
-  test("built-in createClient().listModels() honors additionalModels default (issue #579)", async () => {
+  test("built-in createClient().fetchCatalog() honors additionalModels default (issue #579)", async () => {
     mockState.runtimeModels.set("claude", [
       {
         provider: "claude",
@@ -1249,12 +1407,13 @@ describe("model merging", () => {
     });
 
     const client = registry.claude.createClient(logger);
-    const models = await client.listModels({
+    const catalog = await client.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
 
-    const defaultModel = models.find((model) => model.isDefault) ?? models[0];
+    const defaultModel = catalog.models.find((model) => model.isDefault) ?? catalog.models[0];
     expect(defaultModel?.id).toBe("profile-default");
   });
 
@@ -1277,12 +1436,124 @@ describe("model merging", () => {
       },
     });
 
-    const models = await registry.claude.fetchModels({
+    const { models } = await registry.claude.fetchCatalog({
+      scope: "workspace",
       cwd: "/tmp/registry-models",
       force: false,
     });
 
     expect(models.map((model) => model.id)).toEqual(["MiniMax-M2.7", "MiniMax-M3"]);
     expect(models.find((model) => model.isDefault)?.id).toBe("MiniMax-M3");
+  });
+});
+
+describe("fetchCatalog", () => {
+  test("returns merged models and modes from fetchCatalog", async () => {
+    mockState.runtimeModels.set("codex", [
+      { provider: "codex", id: "codex-runtime", label: "Codex Runtime" },
+    ]);
+
+    const registry = buildProviderRegistry(logger);
+    const catalog = await registry.codex.fetchCatalog({
+      scope: "workspace",
+      cwd: "/tmp/catalog",
+      force: false,
+    });
+
+    expect(catalog.models.map((model) => model.id)).toEqual(["codex-runtime"]);
+    expect(catalog.modes).toEqual([]);
+  });
+
+  test("replacement models skip runtime model discovery but preserve additionalModels", async () => {
+    mockState.runtimeModels.set("codex", [
+      { provider: "codex", id: "codex-runtime", label: "Codex Runtime" },
+    ]);
+
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: {
+        codex: {
+          models: [{ id: "profile-model", label: "Profile Model" }],
+          additionalModels: [{ id: "extra-model", label: "Extra Model" }],
+        },
+      },
+    });
+
+    const catalog = await registry.codex.fetchCatalog({
+      scope: "workspace",
+      cwd: "/tmp/catalog",
+      force: false,
+    });
+
+    expect(catalog.models.map((model) => model.id)).toEqual(["profile-model", "extra-model"]);
+  });
+
+  test("additionalModels can override replacement model fields", async () => {
+    const registry = buildProviderRegistry(logger, {
+      providerOverrides: {
+        codex: {
+          models: [{ id: "shared-model", label: "Profile Label" }],
+          additionalModels: [{ id: "shared-model", label: "Additional Label" }],
+        },
+      },
+    });
+
+    const catalog = await registry.codex.fetchCatalog({
+      scope: "workspace",
+      cwd: "/tmp/catalog",
+      force: false,
+    });
+
+    expect(catalog.models).toEqual([
+      {
+        provider: "codex",
+        id: "shared-model",
+        label: "Additional Label",
+      },
+    ]);
+  });
+
+  test("uses injected client instead of base client when provided", async () => {
+    const injectedModels: AgentModelDefinition[] = [
+      { provider: "codex", id: "injected-model", label: "Injected Model" },
+    ];
+    const injectedModes: AgentMode[] = [{ id: "agent", label: "Agent" }];
+    const injectedClient = {
+      provider: "codex",
+      capabilities: {},
+      fetchCatalog: vi.fn(async () => ({ models: injectedModels, modes: injectedModes })),
+      isAvailable: vi.fn(async () => true),
+    } satisfies Partial<AgentClient> as AgentClient;
+
+    const registry = buildProviderRegistry(logger);
+    const catalog = await registry.codex.fetchCatalog(
+      { cwd: "/tmp/catalog", force: false },
+      injectedClient,
+    );
+
+    expect(injectedClient.fetchCatalog).toHaveBeenCalledTimes(1);
+    expect(catalog.models.map((model) => model.id)).toEqual(["injected-model"]);
+    expect(catalog.modes).toEqual(injectedModes);
+  });
+
+  test("uses injected client fetchCatalog when available", async () => {
+    const injectedClient = {
+      provider: "codex",
+      capabilities: {},
+      fetchCatalog: vi.fn(async () => ({
+        models: [{ provider: "codex", id: "catalog-model", label: "Catalog Model" }],
+        modes: [{ id: "ask", label: "Ask" }],
+      })),
+      isAvailable: vi.fn(async () => true),
+    } satisfies Partial<AgentClient> as AgentClient;
+
+    const registry = buildProviderRegistry(logger);
+    const catalog = await registry.codex.fetchCatalog(
+      { cwd: "/tmp/catalog", force: false },
+      injectedClient,
+    );
+
+    expect(injectedClient.fetchCatalog).toHaveBeenCalledTimes(1);
+    expect(catalog.models.map((model) => model.id)).toEqual(["catalog-model"]);
+    expect(catalog.modes.map((mode) => mode.id)).toEqual(["ask"]);
   });
 });

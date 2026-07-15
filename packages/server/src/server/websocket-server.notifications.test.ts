@@ -12,6 +12,7 @@ import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { asInternals, createStub } from "./test-utils/class-mocks.js";
 import { createProviderSnapshotManagerStub } from "./test-utils/session-stubs.js";
 import type { PushNotificationSender, PushPayload } from "./push/notifications.js";
+import type { WorkspaceAutoName } from "./workspace-auto-name.js";
 
 const wsModuleMock = vi.hoisted(() => {
   class MockWebSocketServer {
@@ -65,6 +66,13 @@ function createLogger() {
   return logger;
 }
 
+function createWorkspaceAutoNameStub(): WorkspaceAutoName {
+  return createStub<WorkspaceAutoName>({
+    scheduleForWorktree: () => {},
+    scheduleForDirectory: () => {},
+  });
+}
+
 class RecordingPushNotificationSender implements PushNotificationSender {
   readonly sent: PushPayload[] = [];
 
@@ -76,6 +84,7 @@ class RecordingPushNotificationSender implements PushNotificationSender {
 function createServer(agentManagerOverrides?: Record<string, unknown>) {
   const pushNotifications = new RecordingPushNotificationSender();
   const agentManager = {
+    subscribe: vi.fn(() => () => {}),
     setAgentAttentionCallback: vi.fn(),
     getAgent: vi.fn(() => null),
     getLastAssistantMessage: vi.fn(async () => null),
@@ -105,6 +114,7 @@ function createServer(agentManagerOverrides?: Record<string, unknown>) {
     createStub<DaemonConfigStore>(daemonConfigStore),
     null,
     { allowedOrigins: new Set() },
+    createWorkspaceAutoNameStub(),
     undefined,
     undefined,
     undefined,

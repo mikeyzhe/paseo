@@ -165,7 +165,7 @@ export const zhCN: TranslationResources = {
     hints: {
       thinking: "Thinking mode",
       model: "切换 Model",
-      mode: "切换权限 Mode",
+      mode: "更改模式",
     },
   },
   agentStream: {
@@ -206,7 +206,7 @@ export const zhCN: TranslationResources = {
     },
   },
   sessions: {
-    title: "Agent 历史",
+    title: "历史",
     empty: "还没有会话",
     actions: {
       loadMore: "加载更多",
@@ -245,6 +245,12 @@ export const zhCN: TranslationResources = {
       copyCode: "复制代码",
       copyTurn: "复制回合",
       copyMessage: "复制消息",
+      forkMenu: "分叉消息",
+      forkInNewTab: "分叉到新标签页",
+      forkInNewWorkspace: "分叉到新工作区",
+      forkUnavailable: "请更新主机以使用此功能。",
+      forkMissingWorkspace: "此 Agent 不在工作区中。",
+      forkFailed: "分叉聊天失败",
       openFile: "打开文件",
       copied: "已复制",
     },
@@ -328,15 +334,21 @@ export const zhCN: TranslationResources = {
   workspace: {
     route: {
       loading: "正在加载 workspace",
+      restoring: "正在恢复 workspace",
+      restoreFailed: "无法恢复此 workspace — 目录可能已被移动或删除",
       connecting: "正在连接",
       hostOffline: "{{hostName}} 已离线",
       cannotReachHost: "无法连接 {{hostName}}",
       hostStatus: "Host 状态：{{status}}",
       missing: "Workspace 未找到",
+      needsHostUpgrade: "更新你的 Host 以恢复此 workspace",
       manageHost: "管理 Host",
     },
     hoverCard: {
       scriptsAccessibility: "Workspace scripts",
+      copyPath: "复制路径",
+      copyBranchName: "复制分支名称",
+      copied: "已复制",
     },
     fileExplorer: {
       sort: {
@@ -410,7 +422,21 @@ export const zhCN: TranslationResources = {
         enterUrl: "输入 URL",
         openDevTools: "打开浏览器开发者工具",
         cancelSelector: "取消元素选择器",
-        selectElement: "选择元素",
+        annotateElement: "标注元素",
+        screenshotElement: "截图元素",
+        screenshotCopied: "已将截图复制到剪贴板",
+        elementCopied: "已将元素复制到剪贴板",
+        screenshotFailed: "无法复制截图",
+      },
+      annotate: {
+        title: "标注元素",
+        placeholder: "给智能体关于此元素的留言…",
+        submit: "附加",
+        cancel: "取消",
+      },
+      devices: {
+        label: "设备尺寸",
+        responsive: "自适应",
       },
       errors: {
         failedToLoad: "页面加载失败",
@@ -591,21 +617,21 @@ export const zhCN: TranslationResources = {
           success: "已更新",
         },
         archive: {
-          label: "归档 worktree",
+          label: "归档工作区",
           pending: "正在归档...",
           success: "已归档",
         },
         mergePr: {
-          squash: "Merge",
-          merge: "Merge",
-          rebase: "Merge",
+          squash: "Merge PR (squash)",
+          merge: "Merge PR (merge)",
+          rebase: "Merge PR (rebase)",
           pending: "正在 merge PR...",
           success: "PR 已 merge",
         },
         autoMerge: {
-          enableSquash: "Auto merge",
-          enableMerge: "Auto merge",
-          enableRebase: "Auto merge",
+          enableSquash: "Auto merge (squash)",
+          enableMerge: "Auto merge (merge)",
+          enableRebase: "Auto merge (rebase)",
           enabled: "Auto-merge 已启用",
           enabling: "正在启用 auto-merge...",
           disabling: "正在禁用 auto-merge...",
@@ -630,7 +656,6 @@ export const zhCN: TranslationResources = {
           updateNoBase: "无法更新，因为无法确定 base branch",
           updateDirty: "有本地变更时无法更新，请先 commit 或 stash",
           updateCurrent: "无法更新，因为此分支已与 {{baseRef}} 保持最新",
-          archiveNotWorktree: "此处无法归档，因为此 workspace 不是作为 Paseo worktree 创建的",
           mergePrNoGithub: "当前无法 merge PR，因为 GitHub 未连接",
           mergePrMissing: "无法 merge PR，因为还没有 pull request",
           mergePrDraft: "无法 merge PR，因为 pull request 仍是 draft",
@@ -653,11 +678,9 @@ export const zhCN: TranslationResources = {
           baseRefUnavailable: "Base ref 不可用",
           failedMerge: "Merge 失败",
           failedMergeFromBase: "从 base merge 失败",
-          worktreePathUnavailable: "Worktree 路径不可用",
-          failedArchive: "归档 worktree 失败",
         },
         archiveWarning: {
-          title: "归档「{{worktreeName}}」？",
+          title: "归档「{{workspaceName}}」？",
           confirm: "归档",
           cancel: "取消",
           uncommittedChanges: "未 commit 的变更",
@@ -675,11 +698,19 @@ export const zhCN: TranslationResources = {
         tooLarge: "Diff 过大，无法显示",
         unified: "Unified diff",
         split: "Side-by-side diff",
+        switchToUnified: "切换到统一差异视图",
+        switchToSplit: "切换到并排差异视图",
+        showTreeView: "显示文件夹树",
+        showFlatView: "显示平铺文件列表",
+        options: "Diff 选项",
         hideWhitespace: "隐藏空白差异",
+        showWhitespace: "显示空白差异",
         scrollLongLines: "滚动长行",
         wrapLongLines: "自动换行长行",
         collapseAll: "折叠所有文件",
         expandAll: "展开所有文件",
+        collapseAllFolders: "折叠所有文件夹",
+        expandAllFolders: "展开所有文件夹",
         refreshing: "正在刷新",
         refresh: "刷新",
         refreshState: "刷新 git 和 GitHub 状态",
@@ -705,6 +736,9 @@ export const zhCN: TranslationResources = {
         failedOpen: "打开 workspace 失败",
       },
       pr: {
+        actions: {
+          viewPullRequest: "查看",
+        },
         sections: {
           checks: "Checks",
           reviews: "Reviews",
@@ -735,6 +769,9 @@ export const zhCN: TranslationResources = {
     },
   },
   sidebar: {
+    pinned: {
+      title: "已置顶",
+    },
     host: {
       noHost: "没有 Host",
       switchTitle: "切换 Host",
@@ -743,12 +780,25 @@ export const zhCN: TranslationResources = {
     actions: {
       addProject: "添加 project",
       newWorkspace: "新建工作区",
+      hosts: "Hosts",
       home: "首页",
       settings: "设置",
       closeSidebar: "关闭侧边栏",
     },
+    help: {
+      trigger: "帮助与支持",
+      sectionHelp: "帮助",
+      diagnostics: "运行诊断",
+      shortcuts: "键盘快捷键",
+      reportIssue: "报告问题",
+      discord: "Discord",
+      github: "创建 GitHub Issue",
+      whatsNew: "新功能",
+      version: "Paseo {{version}}",
+    },
     sections: {
       sessions: "历史",
+      schedules: "计划",
     },
     worktreeSetup: {
       title: "设置 worktree scripts",
@@ -773,6 +823,7 @@ export const zhCN: TranslationResources = {
       toasts: {
         hostDisconnected: "Host 未连接",
         removeFailed: "部分 workspace 移除失败",
+        updateHostToRemove: "更新 host 以移除 projects。",
       },
       empty: {
         title: "还没有 projects",
@@ -791,8 +842,10 @@ export const zhCN: TranslationResources = {
         copyPath: "复制路径",
         copyBranchName: "复制分支名称",
         rename: "重命名 workspace",
+        pin: "置顶",
+        unpin: "取消置顶",
         archive: "归档",
-        archiveWorktree: "归档 worktree",
+        archiveWorkspace: "归档工作区",
         hideFromSidebar: "从侧边栏隐藏",
         archiving: "正在归档...",
         hiding: "正在隐藏...",
@@ -802,12 +855,6 @@ export const zhCN: TranslationResources = {
         hideMessage: "从侧边栏隐藏「{{workspaceName}}」？\n\n磁盘上的文件不会被更改。",
         hideConfirm: "隐藏",
         cancel: "取消",
-      },
-      deleteWorktreePrompt: {
-        title: "归档 workspace",
-        message: "同时从磁盘删除 worktree？",
-        keep: "保留在磁盘上",
-        delete: "删除",
       },
       rename: {
         title: "重命名 workspace",
@@ -820,14 +867,14 @@ export const zhCN: TranslationResources = {
         branchNameCopied: "分支名称已复制",
         hostDisconnected: "Host 未连接",
         hideFailed: "隐藏 workspace 失败",
-        archiveFailed: "归档 worktree 失败",
+        archiveFailed: "归档工作区失败",
       },
     },
   },
   newWorkspace: {
     title: "新建 workspace",
     create: "创建",
-    backing: {
+    isolation: {
       local: "本地",
       worktree: "新建 worktree",
       label: "隔离",
@@ -917,8 +964,14 @@ export const zhCN: TranslationResources = {
         upToDate: "App 已是最新版本。",
         upToDateWithLastChecked: "已是最新版本。上次检查时间：{{time}}。",
         pending: "更新准备好后会通知你。",
+        pendingWithLastChecked: "更新准备好后会通知你。上次检查时间：{{time}}。",
+        pendingWithVersion: "发现更新：{{version}}。正在下载...",
+        pendingWithVersionAndLastChecked:
+          "发现更新：{{version}}。正在下载... 上次检查时间：{{time}}。",
         availableWithVersion: "更新已就绪：{{version}}",
+        availableWithVersionAndLastChecked: "更新已就绪：{{version}}。上次检查时间：{{time}}。",
         available: "有 app 更新可安装。",
+        availableWithLastChecked: "有 app 更新可安装。上次检查时间：{{time}}。",
         installed: "App 更新已安装。需要重启。",
         failed: "App 更新失败。",
         idle: "尚未检查更新状态。",
@@ -1003,6 +1056,12 @@ export const zhCN: TranslationResources = {
       },
     },
   },
+  rootError: {
+    kicker: "出现问题",
+    title: "Paseo 遇到了问题。",
+    body: "请重试以重新加载应用。如果问题持续发生，请在报告时附上下面的详细信息。",
+    details: "详情",
+  },
   startup: {
     errorTitle: "出现问题",
     errorDescription: "本地服务器启动失败。如果持续发生，请在 GitHub 报告问题并附上下方日志。",
@@ -1033,8 +1092,10 @@ export const zhCN: TranslationResources = {
     },
   },
   projectPicker: {
-    placeholder: "输入目录路径...",
+    placeholder: "输入以搜索...",
+    browse: "浏览…",
     opening: "正在打开 project...",
+    searching: "正在搜索...",
     empty: "开始输入路径",
     errors: {
       directory_not_found: "找不到目录。",
@@ -1289,6 +1350,8 @@ export const zhCN: TranslationResources = {
     backdrop: "菜单背景",
   },
   subagents: {
+    detachAction: "分离 {{label}}",
+    detachTooltip: "分离 subagent",
     archiveAction: "归档 {{label}}",
     archiveTooltip: "归档 subagent",
   },
@@ -1312,6 +1375,34 @@ export const zhCN: TranslationResources = {
     subAgentActivity: "Sub-agent 活动",
     input: "输入",
     output: "输出",
+  },
+  toolCallGroup: {
+    editedFiles: {
+      one: "编辑了 {{count}} 个文件",
+      other: "编辑了 {{count}} 个文件",
+    },
+    commands: {
+      one: "运行了 {{count}} 个命令",
+      other: "运行了 {{count}} 个命令",
+    },
+    readFiles: {
+      one: "读取了 {{count}} 个文件",
+      other: "读取了 {{count}} 个文件",
+    },
+    searches: {
+      one: "搜索了 {{count}} 次",
+      other: "搜索了 {{count}} 次",
+    },
+    otherTools: {
+      one: "使用了 {{count}} 个其他工具",
+      other: "使用了 {{count}} 个其他工具",
+    },
+    paseoCalls: {
+      one: "调用了 Paseo {{count}} 次",
+      other: "调用了 Paseo {{count}} 次",
+    },
+    and: "并",
+    failed: "{{count}} 次失败",
   },
   renameModal: {
     rename: "重命名",
@@ -1353,6 +1444,7 @@ export const zhCN: TranslationResources = {
     },
     backToWorkspace: "返回",
     addHost: "添加主机",
+    enableBuiltInDaemon: "启用内置 daemon",
     projects: "项目",
     projectList: {
       hostLoadFailed: "无法从 Host {{hostName}} 加载 projects：{{message}}",
@@ -1361,7 +1453,6 @@ export const zhCN: TranslationResources = {
     groupInfo: "关于 {{title}}",
     sections: {
       general: "通用",
-      daemon: "Daemon",
       appearance: "外观",
       shortcuts: "快捷键",
       integrations: "集成",
@@ -1374,8 +1465,9 @@ export const zhCN: TranslationResources = {
       agents: "Agents",
       workspaces: "Workspaces",
       providers: "Providers",
+      usage: "使用情况",
       terminals: "Terminals",
-      host: "Host",
+      host: "概览",
     },
     general: {
       title: "通用",
@@ -1404,6 +1496,19 @@ export const zhCN: TranslationResources = {
         description: "内置终端缓冲区保留的行数",
         accessibilityLabel: "终端回滚行数",
       },
+      autoExpandReasoning: {
+        label: "始终展开推理过程",
+        description: "默认情况下完全展开 AI 的思考和推理过程",
+      },
+      toolCallDetail: {
+        label: "工具调用显示",
+        description: "工具调用在时间线中的显示方式",
+        accessibilityLabel: "选择工具调用显示方式（{{value}}）",
+        options: {
+          overview: "摘要",
+          detailed: "完整详情",
+        },
+      },
       language: {
         label: "语言",
         description: "应用语言",
@@ -1413,6 +1518,8 @@ export const zhCN: TranslationResources = {
           en: "English",
           es: "Español",
           fr: "Français",
+          ja: "日本語",
+          ptBR: "Português brasileiro",
           ru: "Русский",
           zhCN: "简体中文",
         },
@@ -1424,6 +1531,22 @@ export const zhCN: TranslationResources = {
       playTest: "播放测试",
       playing: "正在播放...",
       playbackFailed: "播放失败：{{message}}",
+      app: {
+        title: "App diagnostic",
+        rowTitle: "App diagnostic",
+        rowHint: "Collect connection, daemon, provider, desktop, and log details",
+        run: "Run",
+        running: "Running diagnostic...",
+        copyLabel: "diagnostic",
+        copyAccessibility: "Copy diagnostic",
+        copyFailed: "Failed to copy diagnostic",
+        refreshAccessibility: "Refresh diagnostic",
+        refreshingAccessibility: "Refreshing diagnostic",
+        progress: {
+          client: "Client",
+          desktop: "Desktop",
+        },
+      },
     },
     about: {
       title: "关于",
@@ -1467,6 +1590,9 @@ export const zhCN: TranslationResources = {
           auto: "系统",
         },
       },
+      detailLevel: {
+        title: "详细程度",
+      },
       fonts: {
         title: "字体",
         systemDefault: "系统默认",
@@ -1509,8 +1635,9 @@ export const zhCN: TranslationResources = {
       },
       help: {
         openProject: "打开项目",
+        newWorkspace: "新建 workspace",
         newWorktree: "新建 worktree",
-        archiveWorktree: "归档 worktree",
+        archiveWorkspace: "归档工作区",
         newTab: "新建标签",
         closeCurrentTab: "关闭当前标签",
         jumpToWorkspace: "跳转到 workspace",
@@ -1540,6 +1667,7 @@ export const zhCN: TranslationResources = {
         toggleFocusMode: "切换专注模式",
         cycleTheme: "循环切换主题",
         focusMessageInput: "聚焦消息输入框",
+        cycleAgentMode: "循环切换代理模式",
         toggleVoiceMode: "切换语音模式",
         startStopDictation: "开始/停止听写",
         interruptAgent: "中断 Agent",
@@ -1695,6 +1823,30 @@ export const zhCN: TranslationResources = {
           requestFailedMessage: "发送重启请求失败。Paseo 会自动重连，请在 Host 显示在线后重试。",
           dialogFailedMessage: "无法打开重启确认对话框。",
         },
+        update: {
+          title: "Update daemon",
+          hint: "Update the daemon to the latest version and restart it",
+          confirm: "Update",
+          confirmTitle: "Update {{name}}",
+          confirmMessage:
+            "This will update the daemon to the latest version and restart it. Running agents will be briefly interrupted.",
+          updating: "Updating...",
+          phaseStarting: "Preparing update...",
+          phaseDownloading: "Downloading packages...",
+          phaseInstalling: "Installing...",
+          phaseComplete: "Update complete, restarting...",
+          unableToReconnectTitle: "Unable to reconnect",
+          unableToReconnectMessage:
+            "{{name}} did not come back online after updating. Please verify the daemon restarted.",
+          unavailableTitle: "Host unavailable",
+          unavailableMessage:
+            "This host is not connected. Wait for it to come online before updating.",
+          offlineTitle: "Host offline",
+          offlineMessage: "This host is offline. Wait until it is back online before updating.",
+          requestFailedTitle: "Update failed",
+          requestFailedMessage: "Failed to update the daemon: {{error}}",
+          dialogFailedMessage: "Unable to open the update confirmation dialog.",
+        },
         dangerZone: "危险区域",
         remove: {
           title: "移除 Host",
@@ -1753,6 +1905,9 @@ export const zhCN: TranslationResources = {
         button: "诊断",
         refresh: "刷新",
         refreshing: "正在刷新...",
+        copyLabel: "诊断",
+        copyAccessibility: "复制诊断",
+        copyFailed: "复制诊断失败",
         refreshAccessibility: "刷新诊断",
         refreshingAccessibility: "正在刷新诊断",
         running: "正在运行诊断...",
@@ -1825,8 +1980,6 @@ export const zhCN: TranslationResources = {
       metadata: {
         title: "元数据生成",
         info: "注入到 Paseo 用来生成元数据的 AI prompts 中的 Project 专属指令，可用于强制执行团队约定，例如分支命名、提交风格或 PR 格式",
-        agentTitle: "Agent 标题",
-        agentTitlePlaceholder: "标题保持祈使句且不超过 40 个字符",
         branchName: "分支名称",
         branchNamePlaceholder: "分支以 feat/ 或 fix/ 开头，个人分支使用 mb/",
         commitMessage: "提交消息",
