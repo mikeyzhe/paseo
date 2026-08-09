@@ -1307,6 +1307,21 @@ export class Session {
     return source ? this.supportsForSource(capability, source) : this.supports(capability);
   }
 
+  private supportsStreamEvent(
+    serializedEvent: Extract<SessionOutboundMessage, { type: "agent_stream" }>["payload"]["event"],
+    source?: object,
+  ): boolean {
+    if (serializedEvent.type === "prompt_suggestion") {
+      return source
+        ? this.supportsForSource(CLIENT_CAPS.promptSuggestions, source)
+        : this.supports(CLIENT_CAPS.promptSuggestions);
+    }
+    if (serializedEvent.type === "timeline") {
+      return this.supportsTimelineItem(serializedEvent.item, source);
+    }
+    return true;
+  }
+
   private forwardAgentStream(
     event: Extract<AgentManagerEvent, { type: "agent_stream" }>,
     serializedEvent: Extract<SessionOutboundMessage, { type: "agent_stream" }>["payload"]["event"],
@@ -1337,22 +1352,14 @@ export class Session {
           this.supportsForSource(CLIENT_CAPS.selectiveAgentTimeline, source))
       )
         continue;
-      if (
-        serializedEvent.type === "timeline" &&
-        !this.supportsTimelineItem(serializedEvent.item, source)
-      )
-        continue;
+      if (!this.supportsStreamEvent(serializedEvent, source)) continue;
       subscription.owner.emit(message);
     }
     // COMPAT(ownedSubscriptions): added in v0.8.0, remove implicit timeline delivery after 2027-03-09.
     for (const [source, { capabilities }] of this.clientSources) {
       if (this.delivery.isModern(source) || capabilities.has(CLIENT_CAPS.selectiveAgentTimeline))
         continue;
-      if (
-        serializedEvent.type === "timeline" &&
-        !this.supportsTimelineItem(serializedEvent.item, source)
-      )
-        continue;
+      if (!this.supportsStreamEvent(serializedEvent, source)) continue;
       const alreadyDelivered = [...this.timelineSubscriptions.values()].some(
         (subscription) =>
           subscription.owner.source === source && subscription.agentIds.has(event.agentId),
@@ -1362,7 +1369,8 @@ export class Session {
     if (
       this.clientSources.size === 0 &&
       !this.supports(CLIENT_CAPS.selectiveAgentTimeline) &&
-      this.timelineSubscriptions.size === 0
+      this.timelineSubscriptions.size === 0 &&
+      this.supportsStreamEvent(serializedEvent)
     )
       this.emit(message);
   }

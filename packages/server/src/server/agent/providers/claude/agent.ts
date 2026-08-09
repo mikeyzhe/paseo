@@ -387,6 +387,7 @@ const INTERRUPT_PLACEHOLDER_PATTERN = /^\[Request interrupted by user(?:[^\]]*)\
 const NO_RESPONSE_REQUESTED_PLACEHOLDER = "No response requested.";
 const STEER_SUPERSEDED_PERMISSION_MESSAGE =
   "The user answered with a message instead of approving. Their message follows.";
+const MAX_PROMPT_SUGGESTION_SCALARS = 500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface SlashCommandInvocation {
@@ -2104,6 +2105,7 @@ class ClaudeAgentSession implements AgentSession {
   private subagentHandbackIds = new Set<string>();
   private pendingPermissions = new Map<string, PendingPermission>();
   private activeForegroundTurnId: string | null = null;
+  private pendingPromptSuggestionTarget: { turnId: string; sessionId: string } | null = null;
   private autonomousTurn: AutonomousTurnState | null = null;
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private readonly timelineAssembler = new TimelineAssembler();
@@ -2269,6 +2271,7 @@ class ClaudeAgentSession implements AgentSession {
     if (this.activeForegroundTurnId) {
       throw new TurnActiveError();
     }
+    this.pendingPromptSuggestionTarget = null;
 
     const slashCommand = this.resolveSlashCommandInvocation(prompt);
     if (slashCommand?.commandName === REWIND_COMMAND_NAME) {
@@ -2750,6 +2753,7 @@ class ClaudeAgentSession implements AgentSession {
     this.activeForegroundTurnId = null;
     this.activeForegroundQuery = null;
     this.activeForegroundInput = null;
+    this.pendingPromptSuggestionTarget = null;
     this.autonomousTurn = null;
     this.cancelCurrentTurn = null;
     this.turnState = "idle";
@@ -3400,6 +3404,9 @@ class ClaudeAgentSession implements AgentSession {
       },
       // Required for provider-level /rewind support.
       enableFileCheckpointing: true,
+      // Claude emits the suggestion after the terminal result. Paseo retains the
+      // completed foreground turn long enough to attach that optional follow-up.
+      promptSuggestions: true,
       // If we have a session ID from a previous query (e.g., after interrupt),
       // resume that session to continue the conversation history.
       ...sessionBinding,
@@ -3754,6 +3761,7 @@ class ClaudeAgentSession implements AgentSession {
   }
 
   private failActiveTurns(errorMessage: string): void {
+    this.pendingPromptSuggestionTarget = null;
     const failure = this.buildTurnFailedEvent(errorMessage);
     this.flushPendingToolCalls();
     if (this.activeForegroundTurnId) {
@@ -4001,6 +4009,10 @@ class ClaudeAgentSession implements AgentSession {
     if (this.shouldSuppressStaleResult(message)) {
       return;
     }
+    if (message.type === "prompt_suggestion") {
+      this.handlePromptSuggestion(message);
+      return;
+    }
 
     const isForeground = Boolean(this.activeForegroundTurnId);
     if (this.opensAutonomousTurn(message)) {
@@ -4042,6 +4054,13 @@ class ClaudeAgentSession implements AgentSession {
       this.logger.debug("Suppressing stale Claude interrupt terminal result");
       return;
     }
+    this.recordPumpedEventActivity(events);
+    this.updatePromptSuggestionTarget(message, events, { isForeground, turnId });
+
+    this.dispatchEvents(events);
+  }
+
+  private recordPumpedEventActivity(events: AgentStreamEvent[]): void {
     if (
       events.some((event) => event.type === "timeline" && event.item.type === "assistant_message")
     ) {
@@ -4058,8 +4077,56 @@ class ClaudeAgentSession implements AgentSession {
     ) {
       this.foregroundHasVisibleActivity = true;
     }
+  }
 
-    this.dispatchEvents(events);
+  private updatePromptSuggestionTarget(
+    message: SDKMessage,
+    events: AgentStreamEvent[],
+    context: { isForeground: boolean; turnId: string | null },
+  ): void {
+    if (message.type !== "result") {
+      return;
+    }
+    const isSuccessfulForegroundResult =
+      message.subtype === "success" &&
+      context.isForeground &&
+      context.turnId !== null &&
+      events.some((event) => event.type === "turn_completed");
+    const sessionId = isSuccessfulForegroundResult
+      ? readTrimmedString(message.session_id)
+      : undefined;
+    this.pendingPromptSuggestionTarget =
+      sessionId && context.turnId ? { turnId: context.turnId, sessionId } : null;
+  }
+
+  private handlePromptSuggestion(
+    message: Extract<SDKMessage, { type: "prompt_suggestion" }>,
+  ): void {
+    const target = this.pendingPromptSuggestionTarget;
+    this.pendingPromptSuggestionTarget = null;
+    if (!target) {
+      return;
+    }
+
+    const sessionId = readTrimmedString(message.session_id);
+    const messageId = readTrimmedString(message.uuid);
+    const suggestion = typeof message.suggestion === "string" ? message.suggestion : "";
+    if (
+      sessionId !== target.sessionId ||
+      !messageId ||
+      suggestion.trim().length === 0 ||
+      [...suggestion].length > MAX_PROMPT_SUGGESTION_SCALARS
+    ) {
+      return;
+    }
+
+    this.notifySubscribers({
+      type: "prompt_suggestion",
+      provider: "claude",
+      turnId: target.turnId,
+      suggestion,
+      messageId,
+    });
   }
 
   private async buildPumpedMessageEvents(
@@ -4141,6 +4208,7 @@ class ClaudeAgentSession implements AgentSession {
     this.activeForegroundTurnId = null;
     this.activeForegroundQuery = null;
     this.activeForegroundInput = null;
+    this.pendingPromptSuggestionTarget = null;
     this.syncTurnState("missing resumed conversation");
     return true;
   }

@@ -45,6 +45,9 @@ export const CLIENT_CAPS = {
   pluginTimelineItems: "plugin_timeline_items",
   // COMPAT(workspaceSetupBlocked): added in v0.8.0, remove after 2027-03-07 once client floor >= v0.8.0.
   workspaceSetupBlocked: "workspace_setup_blocked",
+  // COMPAT(promptSuggestions): added in v0.3.X. The event is a new discriminated-union
+  // variant, so only clients that advertise support may receive it. Remove after 2027-02-09.
+  promptSuggestions: "prompt_suggestions",
   browserHost: "browser_host",
 } as const;
 
