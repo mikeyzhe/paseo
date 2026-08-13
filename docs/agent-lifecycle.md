@@ -65,6 +65,20 @@ Permission requests are notification checkpoints, not the end of that subscripti
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
 
+### Parent handoff state
+
+Delegated work belongs to the parent agent, not directly to the human. Paseo records the current
+turn's delivery state in `labels["paseo.parent-handoff"]`:
+
+- `pending` before a delegated turn starts;
+- `permission_delivered` after the permission payload is accepted into the parent turn;
+- `completion_delivered` after the final response or error is accepted into the parent turn.
+
+Resolving the final pending permission returns the state to `pending` until the child produces and
+delivers its final result. A failed or skipped parent dispatch never records delivery. Downstream
+mirrors can therefore distinguish parent-owned work from a genuine human-review fallback without
+conflating it with whether a person opened the child tab.
+
 ## Provider-managed child agents
 
 Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.
@@ -206,6 +220,7 @@ Each agent is a single JSON file. Fields relevant to this doc:
 | `id`                                         | `string`      | Stable identifier                                                                  |
 | `archivedAt`                                 | `string?`     | Soft-delete timestamp (ISO 8601)                                                   |
 | `labels["paseo.parent-agent-id"]`            | `string?`     | Parent agent ID, set automatically for agent-scoped creation and removed by detach |
+| `labels["paseo.parent-handoff"]`             | `string?`     | Current delegated turn's parent-delivery state                                     |
 | `labels["paseo.open-agent-tab.<client-id>"]` | `string?`     | `"true"` protects an open tab on that client; detach clears every matching label   |
 | `lastStatus`                                 | `AgentStatus` | `initializing` / `idle` / `running` / `error` / `closed`                           |
 

@@ -1,5 +1,10 @@
 import { expect, it, test, vi } from "vitest";
 import pino, { type Logger } from "pino";
+import {
+  PARENT_AGENT_ID_LABEL,
+  PARENT_HANDOFF_LABEL,
+  type ParentHandoffState,
+} from "@getpaseo/protocol/agent-labels";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
@@ -54,6 +59,7 @@ interface FinishNotificationScenario {
   finishChildAndReadParentPrompt(): Promise<string>;
   closeChildAndReadParentPrompt(): Promise<string>;
   parentPrompts(): string[];
+  handoffStates(): ParentHandoffState[];
   wasParentPrompted(): boolean;
 }
 
@@ -64,17 +70,24 @@ function createFinishNotificationScenario(
   let resolveParentPrompt: ((prompt: string) => void) | null = null;
   let parentPrompted = false;
   const parentPrompts: string[] = [];
+  const handoffStates: ParentHandoffState[] = [];
+  const childLabels: Record<string, string> = {};
+  if (options?.childParentAgentId !== null) {
+    childLabels[PARENT_AGENT_ID_LABEL] = options?.childParentAgentId ?? "caller-agent";
+  }
 
   const childAgent: ManagedAgent = Object.create(null);
   Reflect.set(childAgent, "id", "child-agent");
   Reflect.set(childAgent, "lifecycle", "idle");
   Reflect.set(childAgent, "config", { title: "Child Agent" });
+  Reflect.set(childAgent, "labels", childLabels);
   Reflect.set(childAgent, "pendingPermissions", new Map());
 
   const callerAgent: ManagedAgent = Object.create(null);
   Reflect.set(callerAgent, "id", "caller-agent");
   Reflect.set(callerAgent, "lifecycle", "idle");
   Reflect.set(callerAgent, "config", { title: "Caller Agent" });
+  Reflect.set(callerAgent, "labels", {});
 
   const agentManager: AgentManager = Object.create(AgentManager.prototype);
   Reflect.set(agentManager, "getAgent", (agentId: string) => {
@@ -107,15 +120,23 @@ function createFinishNotificationScenario(
     resolveParentPrompt?.(prompt);
     throw options?.parentPromptError;
   });
+  Reflect.set(
+    agentManager,
+    "setLabels",
+    async (agentId: string, labels: Record<string, string>) => {
+      if (agentId !== "child-agent") return;
+      Object.assign(childLabels, labels);
+      const state = labels[PARENT_HANDOFF_LABEL] as ParentHandoffState | undefined;
+      if (state) handoffStates.push(state);
+    },
+  );
 
   const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
   Reflect.set(agentStorage, "get", async (agentId: string) => {
     if (agentId === "child-agent") {
-      const parentAgentId =
-        options?.childParentAgentId === undefined ? "caller-agent" : options.childParentAgentId;
       return {
         title: "Child Agent",
-        labels: parentAgentId ? { "paseo.parent-agent-id": parentAgentId } : {},
+        labels: childLabels,
       };
     }
     return null;
@@ -234,6 +255,9 @@ function createFinishNotificationScenario(
     parentPrompts() {
       return parentPrompts;
     },
+    handoffStates() {
+      return handoffStates;
+    },
     wasParentPrompted() {
       return parentPrompted;
     },
@@ -245,12 +269,13 @@ test("isSystemInjectedEnvelope matches the envelope formatSystemNotificationProm
   expect(isSystemInjectedEnvelope("hello world")).toBe(false);
 });
 
-test("sendPromptToAgent forwards the client message id as run options", async () => {
+test("sendPromptToAgent forwards run options without labeling a root agent", async () => {
   const agent: ManagedAgent = Object.create(null);
   Reflect.set(agent, "id", "agent-1");
   Reflect.set(agent, "provider", "codex");
 
   const streamAgentSpy = vi.fn(() => (async function* noop() {})());
+  const setLabelsSpy = vi.fn();
   const agentManager: AgentManager = Object.create(AgentManager.prototype);
   Reflect.set(
     agentManager,
@@ -260,6 +285,7 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
   Reflect.set(agentManager, "tryRunOutOfBand", vi.fn().mockReturnValue(false));
   Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
   Reflect.set(agentManager, "streamAgent", streamAgentSpy);
+  Reflect.set(agentManager, "setLabels", setLabelsSpy);
 
   const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
   Reflect.set(
@@ -282,6 +308,56 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
     outputSchema: { type: "object" },
     clientMessageId: "msg-client-1",
   });
+  expect(setLabelsSpy).not.toHaveBeenCalled();
+});
+
+test("a delegated turn becomes pending before provider work starts", async () => {
+  const labels = {
+    [PARENT_AGENT_ID_LABEL]: "parent-1",
+    [PARENT_HANDOFF_LABEL]: "completion_delivered",
+  };
+  const agent: ManagedAgent = Object.create(null);
+  Reflect.set(agent, "id", "child-1");
+  Reflect.set(agent, "provider", "codex");
+  Reflect.set(agent, "labels", labels);
+
+  const setLabelsSpy = vi.fn(async (_agentId: string, updates: Record<string, string>) => {
+    Object.assign(labels, updates);
+  });
+  const streamAgentSpy = vi.fn(() => {
+    expect(labels[PARENT_HANDOFF_LABEL]).toBe("pending");
+    return (async function* noop() {})();
+  });
+  const agentManager: AgentManager = Object.create(AgentManager.prototype);
+  Reflect.set(
+    agentManager,
+    "getAgent",
+    vi.fn(() => agent),
+  );
+  Reflect.set(agentManager, "setLabels", setLabelsSpy);
+  Reflect.set(agentManager, "tryRunOutOfBand", vi.fn().mockReturnValue(false));
+  Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
+  Reflect.set(agentManager, "streamAgent", streamAgentSpy);
+
+  const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
+  Reflect.set(
+    agentStorage,
+    "get",
+    vi.fn(async () => null),
+  );
+
+  await sendPromptToAgent({
+    agentManager,
+    agentStorage,
+    agentId: "child-1",
+    prompt: "continue",
+    logger: createTestLogger(),
+  });
+
+  expect(setLabelsSpy).toHaveBeenCalledWith("child-1", {
+    [PARENT_HANDOFF_LABEL]: "pending",
+  });
+  expect(streamAgentSpy).toHaveBeenCalledOnce();
 });
 
 test("finish notifications tell the parent the child's last assistant message", async () => {
@@ -297,6 +373,7 @@ test("finish notifications tell the parent the child's last assistant message", 
       "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>",
     ),
   );
+  await vi.waitFor(() => expect(scenario.handoffStates()).toEqual(["completion_delivered"]));
 });
 
 test("finish notifications truncate oversized child responses", async () => {
@@ -337,6 +414,7 @@ test("finish notifications survive permission responses", async () => {
     expect(scenario.parentPrompts()).toHaveLength(1);
   });
   expect(scenario.parentPrompts()[0]).toContain("needs permission.");
+  await vi.waitFor(() => expect(scenario.handoffStates()).toEqual(["permission_delivered"]));
   const permissionPayload = scenario
     .parentPrompts()[0]
     .match(/<permission-request>\n([\s\S]+?)\n<\/permission-request>/)?.[1];
@@ -358,12 +436,22 @@ test("finish notifications survive permission responses", async () => {
   });
 
   scenario.resolveChildPermission();
+  await vi.waitFor(() =>
+    expect(scenario.handoffStates()).toEqual(["permission_delivered", "pending"]),
+  );
   scenario.finishChild();
 
   await vi.waitFor(() => {
     expect(scenario.parentPrompts()).toHaveLength(2);
   });
   expect(scenario.parentPrompts()[1]).toContain("finished.");
+  await vi.waitFor(() =>
+    expect(scenario.handoffStates()).toEqual([
+      "permission_delivered",
+      "pending",
+      "completion_delivered",
+    ]),
+  );
 });
 
 test("an idle permission resolution waits for the resumed run to finish", async () => {
@@ -440,7 +528,9 @@ test("detaching a child ends its parent-owned finish notification", async () => 
 });
 
 test("follow-up finish notifications do not require a parent relationship", async () => {
-  const scenario = createFinishNotificationScenario({ childParentAgentId: "another-agent" });
+  const scenario = createFinishNotificationScenario({
+    childParentAgentId: "another-agent",
+  });
 
   scenario.startWatchingChild();
   const parentPrompt = await scenario.finishChildAndReadParentPrompt();
@@ -465,9 +555,12 @@ test("finish notifications log a rejected parent prompt without an unhandled rej
       childAgentId: "child-agent",
       callerAgentId: "caller-agent",
       reason: "finished",
-      err: expect.objectContaining({ message: "parent provider rejected replacement" }),
+      err: expect.objectContaining({
+        message: "parent provider rejected replacement",
+      }),
     }),
   ]);
+  expect(scenario.handoffStates()).not.toContain("completion_delivered");
 });
 
 it("does not notify archived callers", async () => {

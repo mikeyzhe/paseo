@@ -8,18 +8,43 @@ import type {
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
-import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import {
+  getParentAgentIdFromLabels,
+  getParentHandoffStateFromLabels,
+  PARENT_HANDOFF_LABEL,
+  type ParentHandoffState,
+} from "@getpaseo/protocol/agent-labels";
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
 
 export type AgentRunController = Pick<
   AgentManager,
-  "getAgent" | "tryRunOutOfBand" | "hasInFlightRun" | "replaceAgentRun" | "streamAgent"
+  | "getAgent"
+  | "setLabels"
+  | "tryRunOutOfBand"
+  | "hasInFlightRun"
+  | "replaceAgentRun"
+  | "streamAgent"
 >;
 
 export interface StartAgentRunOptions {
   replaceRunning?: boolean;
   runOptions?: AgentRunOptions;
+}
+
+async function setParentHandoffState(
+  agentManager: Pick<AgentManager, "getAgent" | "setLabels">,
+  agentId: string,
+  state: ParentHandoffState,
+): Promise<void> {
+  const snapshot = agentManager.getAgent(agentId);
+  if (!snapshot || getParentAgentIdFromLabels(snapshot.labels) === null) {
+    return;
+  }
+  if (getParentHandoffStateFromLabels(snapshot.labels) === state) {
+    return;
+  }
+  await agentManager.setLabels(agentId, { [PARENT_HANDOFF_LABEL]: state });
 }
 
 export async function startAgentRun(
@@ -48,6 +73,7 @@ export async function startAgentRun(
   if (agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
     return { outOfBand: true };
   }
+  await setParentHandoffState(agentManager, agentId, "pending");
   const shouldReplace = Boolean(options?.replaceRunning && agentManager.hasInFlightRun(agentId));
   const runOptions = options?.runOptions;
   const iterator = shouldReplace
@@ -161,7 +187,9 @@ export async function waitForAgentRunStartWithTimeout(
   const startTimeout = setTimeout(() => startAbort.abort("timeout"), AGENT_RUN_START_TIMEOUT_MS);
 
   try {
-    await agentManager.waitForAgentRunStart(agentId, { signal: startAbort.signal });
+    await agentManager.waitForAgentRunStart(agentId, {
+      signal: startAbort.signal,
+    });
   } finally {
     clearTimeout(startTimeout);
   }
@@ -180,13 +208,13 @@ export async function waitForAgentRunStartWithTimeout(
  */
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
-): Promise<{ outOfBand: boolean }> {
+): Promise<{ outOfBand: boolean; dispatched: boolean }> {
   const unarchive = params.unarchive ?? true;
 
   const record = await params.agentStorage.get(params.agentId);
   if (record?.archivedAt) {
     if (!unarchive) {
-      return { outOfBand: false };
+      return { outOfBand: false, dispatched: false };
     }
     await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId);
   }
@@ -205,10 +233,17 @@ export async function sendPromptToAgent(
     ? { ...params.runOptions, clientMessageId: params.messageId }
     : params.runOptions;
 
-  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
-    runOptions,
-  });
+  const result = await startAgentRun(
+    params.agentManager,
+    params.agentId,
+    params.prompt,
+    params.logger,
+    {
+      replaceRunning: true,
+      runOptions,
+    },
+  );
+  return { ...result, dispatched: true };
 }
 
 export async function startCreatedAgentInitialPrompt(
@@ -286,7 +321,10 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
   if (lastAssistantMessage) {
     if (lastAssistantMessage.length > FINISH_NOTIFICATION_MESSAGE_LIMIT) {
       const omitted = lastAssistantMessage.length - FINISH_NOTIFICATION_MESSAGE_LIMIT;
-      lastAssistantMessage = `${lastAssistantMessage.slice(0, FINISH_NOTIFICATION_MESSAGE_LIMIT)}\n[truncated ${omitted} chars; use get_agent_activity for the full response]`;
+      lastAssistantMessage = `${lastAssistantMessage.slice(
+        0,
+        FINISH_NOTIFICATION_MESSAGE_LIMIT,
+      )}\n[truncated ${omitted} chars; use get_agent_activity for the full response]`;
     }
     sections.push(`<agent-response>\n${lastAssistantMessage}\n</agent-response>`);
   }
@@ -342,7 +380,7 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       permissionRequest,
     });
 
-    await sendPromptToAgent({
+    const dispatch = await sendPromptToAgent({
       agentManager,
       agentStorage,
       agentId: callerAgentId,
@@ -350,6 +388,25 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       unarchive: false,
       logger,
     });
+    if (!dispatch.dispatched) {
+      return;
+    }
+    await setParentHandoffState(
+      agentManager,
+      childAgentId,
+      reason === "needs permission" ? "permission_delivered" : "completion_delivered",
+    );
+  }
+
+  function queuePendingHandoff(): void {
+    notificationQueue = notificationQueue
+      .then(() => setParentHandoffState(agentManager, childAgentId, "pending"))
+      .catch((error) => {
+        logger.error(
+          { err: error, childAgentId, callerAgentId },
+          "Failed to reset parent handoff state",
+        );
+      });
   }
 
   function notifySafely(reason: FinishNotificationReason, options: NotifySafelyOptions = {}): void {
@@ -372,10 +429,15 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       }
 
       if (event.type === "agent_state") {
+        let resolvedDeliveredPermission = false;
         for (const requestId of notifiedPermissionRequestIds) {
           if (!event.agent.pendingPermissions.has(requestId)) {
             notifiedPermissionRequestIds.delete(requestId);
+            resolvedDeliveredPermission = true;
           }
+        }
+        if (resolvedDeliveredPermission && event.agent.pendingPermissions.size === 0) {
+          queuePendingHandoff();
         }
         if (event.agent.lifecycle === "running") {
           if (event.agent.pendingPermissions.size === 0) {
@@ -414,9 +476,12 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       }
 
       if (event.event.type === "permission_resolved") {
-        notifiedPermissionRequestIds.delete(event.event.requestId);
+        const hadDeliveredPermission = notifiedPermissionRequestIds.delete(event.event.requestId);
         const childAgent = agentManager.getAgent(childAgentId);
         if (childAgent?.pendingPermissions.size === 0) {
+          if (hadDeliveredPermission) {
+            queuePendingHandoff();
+          }
           hasSeenRunning = childAgent.lifecycle === "running";
         }
       }

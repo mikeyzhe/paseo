@@ -1,11 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
   getParentAgentIdFromLabels,
+  getParentHandoffStateFromLabels,
   getOpenAgentTabLabel,
   hasOpenAgentTab,
   isDelegatedAgent,
   isOpenAgentTabLabel,
   PARENT_AGENT_ID_LABEL,
+  PARENT_HANDOFF_LABEL,
 } from "./agent-labels.js";
 
 describe("agent label policy", () => {
@@ -20,6 +22,22 @@ describe("agent label policy", () => {
     expect(isDelegatedAgent({ labels: {} })).toBe(false);
     expect(isDelegatedAgent({ labels: { [PARENT_AGENT_ID_LABEL]: "   " } })).toBe(false);
     expect(isDelegatedAgent({ labels: { [PARENT_AGENT_ID_LABEL]: 42 } })).toBe(false);
+  });
+
+  test("accepts only canonical parent handoff states", () => {
+    expect(
+      getParentHandoffStateFromLabels({
+        [PARENT_HANDOFF_LABEL]: "completion_delivered",
+      }),
+    ).toBe("completion_delivered");
+    expect(
+      getParentHandoffStateFromLabels({
+        [PARENT_HANDOFF_LABEL]: "permission_delivered",
+      }),
+    ).toBe("permission_delivered");
+    expect(getParentHandoffStateFromLabels({ [PARENT_HANDOFF_LABEL]: "pending" })).toBe("pending");
+    expect(getParentHandoffStateFromLabels({ [PARENT_HANDOFF_LABEL]: "done" })).toBeNull();
+    expect(getParentHandoffStateFromLabels({})).toBeNull();
   });
 
   test("treats any true client-scoped open-tab label as open", () => {
