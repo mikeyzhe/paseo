@@ -44,7 +44,7 @@ export class OpenCodeBridge {
   private readonly paseoHome: string;
   private readonly logger: Logger;
   private readonly token = randomBytes(32).toString("hex");
-  private readonly sessions = new Map<string, OpenCodeSessionBinding>();
+  private readonly sessions = new Map<string, OpenCodeSessionBinding[]>();
   private server: Server | null = null;
   private baseUrl: string | null = null;
   private pluginUrl: string | null = null;
@@ -87,10 +87,16 @@ export class OpenCodeBridge {
       env: { ...input.env },
       ...(input.tools ? { tools: input.tools } : {}),
     };
-    this.sessions.set(input.sessionId, binding);
+    const bindings = this.sessions.get(input.sessionId) ?? [];
+    this.sessions.set(input.sessionId, [...bindings, binding]);
     return () => {
-      if (this.sessions.get(input.sessionId) === binding) {
+      const current = this.sessions.get(input.sessionId);
+      if (!current) return;
+      const remaining = current.filter((candidate) => candidate !== binding);
+      if (remaining.length === 0) {
         this.sessions.delete(input.sessionId);
+      } else {
+        this.sessions.set(input.sessionId, remaining);
       }
     };
   }
@@ -157,7 +163,7 @@ export class OpenCodeBridge {
         new RegExp(`^${INTERNAL_PREFIX}/sessions/([^/]+)/context$`),
       );
       if (request.method === "GET" && contextMatch) {
-        const binding = this.sessions.get(decodeURIComponent(contextMatch[1]));
+        const binding = this.getSessionBinding(decodeURIComponent(contextMatch[1]));
         if (!binding) {
           sendJson(response, 404, { error: "OpenCode session is not bound to a Paseo agent" });
           return;
@@ -215,7 +221,7 @@ export class OpenCodeBridge {
     request: IncomingMessage;
     response: ServerResponse;
   }): Promise<void> {
-    const binding = this.sessions.get(input.sessionId);
+    const binding = this.getSessionBinding(input.sessionId);
     if (!binding) {
       sendJson(input.response, 404, { error: "OpenCode session is not bound to a Paseo agent" });
       return;
@@ -233,6 +239,11 @@ export class OpenCodeBridge {
       signal: controller.signal,
     });
     sendJson(input.response, 200, addModelVisibleStructuredContent(result));
+  }
+
+  private getSessionBinding(sessionId: string): OpenCodeSessionBinding | undefined {
+    const bindings = this.sessions.get(sessionId);
+    return bindings?.[bindings.length - 1];
   }
 
   private requireBaseUrl(): string {
