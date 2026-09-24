@@ -225,6 +225,46 @@ describe("OpenCodeBridge", () => {
     }
   });
 
+  test("restores the surviving binding when an overlapping owner releases", async () => {
+    const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-opencode-bridge-overlap-"));
+    temporaryDirectories.push(paseoHome);
+    const bridge = new OpenCodeBridge({ paseoHome, logger: createTestLogger() });
+    await bridge.start();
+
+    const releaseOriginal = bridge.bindSession({
+      sessionId: "ses_shared",
+      env: { PASEO_AGENT_ID: "agent-original" },
+    });
+    const releaseReplacement = bridge.bindSession({
+      sessionId: "ses_shared",
+      env: { PASEO_AGENT_ID: "agent-replacement" },
+    });
+
+    try {
+      const plugin = readPluginOptions(bridge.decorateServerEnv({}));
+      const headers = { Authorization: `Bearer ${plugin.token}` };
+      const contextUrl = `${plugin.baseUrl}/_internal/opencode/sessions/ses_shared/context`;
+
+      const replacement = await fetch(contextUrl, { headers });
+      expect(await replacement.json()).toEqual({
+        env: { PASEO_AGENT_ID: "agent-replacement" },
+      });
+
+      releaseReplacement();
+      const restored = await fetch(contextUrl, { headers });
+      expect(await restored.json()).toEqual({
+        env: { PASEO_AGENT_ID: "agent-original" },
+      });
+
+      releaseOriginal();
+      const released = await fetch(contextUrl, { headers });
+      expect(released.status).toBe(404);
+    } finally {
+      releaseReplacement();
+      releaseOriginal();
+      await bridge.close();
+    }
+  });
   test("v2 plugin filters caller tools and inherits child session bindings", async () => {
     const paseoHome = await mkdtemp(path.join(tmpdir(), "paseo-opencode-v2-scope-"));
     temporaryDirectories.push(paseoHome);

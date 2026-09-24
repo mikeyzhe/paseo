@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 
-import type { AgentProvider } from "./agent-sdk-types.js";
+import type { AgentProvider, AgentSessionConfig } from "./agent-sdk-types.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import {
@@ -14,7 +14,10 @@ import {
 
 interface PendingAgentInitialization {
   promise: Promise<ManagedAgent>;
-  options: { broadcastTimeline: boolean };
+  options: {
+    broadcastTimeline: boolean;
+    configOverrides?: Partial<AgentSessionConfig>;
+  };
 }
 
 const pendingAgentInitializations = new Map<string, PendingAgentInitialization>();
@@ -34,6 +37,7 @@ export interface EnsureAgentLoadedDeps {
   agentStorage: AgentStorage;
   validProviders?: Iterable<AgentProvider>;
   broadcastTimeline?: boolean;
+  configOverrides?: Partial<AgentSessionConfig>;
   logger: Logger;
 }
 
@@ -69,6 +73,12 @@ export async function ensureAgentLoaded(
   const inflight = pendingAgentInitializations.get(agentId);
   if (inflight) {
     inflight.options.broadcastTimeline ||= deps.broadcastTimeline === true;
+    if (deps.configOverrides) {
+      inflight.options.configOverrides = {
+        ...inflight.options.configOverrides,
+        ...deps.configOverrides,
+      };
+    }
     return inflight.promise;
   }
 
@@ -85,11 +95,18 @@ export async function ensureAgentLoaded(
   const laterInflight = pendingAgentInitializations.get(agentId);
   if (laterInflight) {
     laterInflight.options.broadcastTimeline ||= deps.broadcastTimeline === true;
+    if (deps.configOverrides) {
+      laterInflight.options.configOverrides = {
+        ...laterInflight.options.configOverrides,
+        ...deps.configOverrides,
+      };
+    }
     return laterInflight.promise;
   }
 
   const pendingOptions = {
     broadcastTimeline: deps.broadcastTimeline === true,
+    ...(deps.configOverrides ? { configOverrides: deps.configOverrides } : {}),
   };
   const initPromise = (async () => {
     const record = await deps.agentStorage.get(agentId);
@@ -108,7 +125,7 @@ export async function ensureAgentLoaded(
     if (handle) {
       snapshot = await deps.agentManager.resumeAgentFromPersistence(
         handle,
-        buildConfigOverrides(record),
+        { ...buildConfigOverrides(record), ...pendingOptions.configOverrides },
         agentId,
         { ...extractTimestamps(record), attention: extractAttention(record) },
         record.archivedAt ? { purpose: "history" } : undefined,
