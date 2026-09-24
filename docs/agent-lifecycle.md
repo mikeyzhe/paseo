@@ -227,6 +227,10 @@ lifecycle queue. Resume chooses its history or interactive purpose from the dura
 entering that queue. Shutdown must finish before the manager releases runtime ownership; a failed
 close retains the runtime for cleanup and blocks replacement through that close operation.
 
+A resume by provider persistence handle reuses the newest matching Paseo agent record. It creates a
+new record only when that native session has no Paseo record. Explicit resume and ordinary agent
+loading share one in-flight load for that record so they cannot acquire overlapping runtimes.
+
 Authoritative timeline catch-up can use a runtime-only `history` resume purpose. The retained
 history session contains only the read results and must release its provider process once replay
 finishes. Codex reads the persisted thread and child histories on a temporary app-server and never
