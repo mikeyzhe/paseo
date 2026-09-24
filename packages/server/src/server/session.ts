@@ -51,7 +51,6 @@ import { matchesAgentHistoryQuery } from "./agent-history-search.js";
 import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech/speech-provider.js";
 import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js";
 import {
-  buildConfigOverrides,
   isStoredAgentProviderAvailable,
   resolveStoredAgentUpdatedAt,
   toAgentPersistenceHandle,
@@ -4417,12 +4416,16 @@ export class Session {
     );
     try {
       const matched = await this.unarchiveAgentByHandle(handle);
-      const effectiveOverrides = matched
-        ? { ...buildConfigOverrides(matched.record), ...overrides }
-        : overrides;
       let snapshot: ManagedAgent;
       try {
-        snapshot = await this.agentManager.resumeAgentFromPersistence(handle, effectiveOverrides);
+        snapshot = matched
+          ? await ensureAgentLoaded(matched.record.id, {
+              agentManager: this.agentManager,
+              agentStorage: this.agentStorage,
+              configOverrides: overrides,
+              logger: this.sessionLogger,
+            })
+          : await this.agentManager.resumeAgentFromPersistence(handle, overrides);
       } catch (error) {
         if (matched?.didUnarchive && matched.originalArchivedAt) {
           await this.agentManager.archiveSnapshot(matched.record.id, matched.originalArchivedAt);
