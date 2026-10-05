@@ -369,14 +369,32 @@ export class Session {
       text.push(
         `/${prompt.input.name}${prompt.input.arguments ? ` ${prompt.input.arguments}` : ""}`,
       );
-    } else
+    }     else
       for (const part of prompt.input.content) {
         if (part.type === "text") {
           input.push({ type: "text", text: part.text });
           text.push(part.text);
         } else if (part.type === "image")
           input.push({ type: "image", base64Data: part.data, mediaType: part.mimeType });
-        else throw new MuseError("unsupported", `Muse does not support ${part.type} attachments`);
+        else if (part.type === "uploaded_file") {
+          // Muse has no file part: pass the same reference text every builtin
+          // provider renders for uploaded_file
+          // (packages/server/src/server/agent/prompt-attachments.ts) so the
+          // agent can read the file at its path. Nothing is written to disk.
+          if (!part.path)
+            throw new MuseError(
+              "unsupported",
+              `Muse cannot attach uploaded file "${part.fileName}": it has no path on disk`,
+            );
+          const reference = [
+            `Uploaded file: ${part.fileName}`,
+            `Path: ${part.path}`,
+            `MIME: ${part.mimeType}`,
+            `Size: ${part.size} bytes`,
+          ].join("\n");
+          input.push({ type: "text", text: reference });
+          text.push(reference);
+        } else throw new MuseError("unsupported", `Muse does not support ${part.type} attachments`);
       }
     const params: TurnStartParams = {
       commandId: id,
