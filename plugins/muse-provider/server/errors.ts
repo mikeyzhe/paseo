@@ -36,6 +36,17 @@ function isUnavailableReviewer(message: string): boolean {
   return message.includes("automated reviewer is unavailable");
 }
 
+// HOTFIX (2026-10-05, fleet-local): Muse #79 — a single poisoned `muse serve`
+// process wedges its whole session while the on-disk event log stays healthy:
+// run terminals fail and turn/start rejects with "event log failed" (e.g.
+// "Origin read requires valid checkpoint-suffix…", "event id … conflicts with
+// an existing event") or "invalid run configuration: MCP startup audit failed".
+// session.ts uses this to decide when to replace the host process. Remove when
+// Paseo ships a fix.
+export function isMuseRuntimeFault(message: string): boolean {
+  return /event log failed/i.test(message) || /MCP startup audit failed/i.test(message);
+}
+
 export function actionableError(error: unknown, launch: ProviderLaunch): ProviderError {
   if (!(error instanceof Error)) return { code: "muse", message: String(error) };
   // Muse 1.4.1 reports this profile failure as internal, without a specific error kind.
