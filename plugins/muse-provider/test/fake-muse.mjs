@@ -67,6 +67,7 @@ function controlResponse(frame) {
     process.exit(Number(process.env.MUSE_TEST_EXIT));
   }
   if (process.env.MUSE_TEST_HANG === frame.method) return true;
+  if (dedupeReplayResponse(frame)) return true;
   if (frame.method === "session/setReasoningEffort") {
     respond(frame, { status: "accepted", commandId: frame.params.commandId });
     return true;
@@ -86,20 +87,7 @@ function controlResponse(frame) {
     rpcError(frame, -32020, "sessionNotFound", "missing");
     return true;
   }
-  if (process.env.MUSE_TEST_RUNTIME_FAULT === frame.method) {
-    const always = process.env.MUSE_TEST_RUNTIME_FAULT_ALWAYS === "1";
-    const skip = Number(process.env.MUSE_TEST_RUNTIME_FAULT_SKIP || "0");
-    if ((always || !sawSessionResume()) && turnStartCount() !== skip) {
-      rpcError(
-        frame,
-        -32001,
-        "internal",
-        process.env.MUSE_TEST_RUNTIME_FAULT_MESSAGE ||
-          "event log failed: Origin read requires valid checkpoint-suffix",
-      );
-      return true;
-    }
-  }
+  if (runtimeFaultResponse(frame)) return true;
   if (frame.method === "session/resume" && process.env.MUSE_TEST_RUNTIME_FAULT) {
     // Recovery resume on scenarios whose fixture has no session/resume rows.
     // Echo the requested sessionId so later fixture messages still match the
@@ -109,33 +97,37 @@ function controlResponse(frame) {
     respond(frame, result);
     return true;
   }
-  if (frame.method === "item/readOutput" && process.env.MUSE_TEST_READOUTPUT_FAULT) {
-    const fault = process.env.MUSE_TEST_READOUTPUT_FAULT;
-    if (fault === "nodata") {
-      send({
-        jsonrpc: "2.0",
-        id: frame.id,
-        error: { code: -32001, message: "item or attached output ref was not found" },
-      });
-    } else {
-      const messages = {
-        notFound: "item or attached output ref was not found",
-        outputUnavailable: "stored output is unavailable",
-      };
-      rpcError(frame, -32001, fault, messages[fault] || "boom");
-    }
-    // The fault replaces the fixture success response; still emit the rest of
-    // the readOutput window so the turn continues to its terminal.
-    const request = rows.find((row) => row.dir === "out" && row.msg.method === "item/readOutput");
-    if (request) {
-      const position = rows.indexOf(request);
-      let end = position + 1;
-      while (end < rows.length && !(rows[end].dir === "out" && rows[end].msg.method)) end++;
-      for (const row of rows.slice(position + 1, end).filter((r) => r.dir === "in")) {
-        if (!row.msg.method) continue;
-        emitFixtureMessage(row.msg, request.msg, frame);
-      }
-    }
+  if (readOutputFaultResponse(frame)) return true;
+  return false;
+}
+// Real-muse parity: a same-commandId turn/start replays the recorded result
+// and emits no new view events (verified against `muse serve` 1.4.2 after
+// session/resume on a fresh host process).
+function dedupeReplayResponse(frame) {
+  if (process.env.MUSE_TEST_DEDUPE_REPLAY !== "1" || frame.method !== "turn/start") return false;
+  if (priorTurnStartsWith(frame.params.commandId) === 0) return false;
+  respond(frame, {
+    commandId: frame.params.commandId,
+    status: "accepted",
+    turnId: frame.params.commandId,
+    startedNewTurn: false,
+    disposition: "started",
+    replayed: true,
+  });
+  return true;
+}
+function runtimeFaultResponse(frame) {
+  if (process.env.MUSE_TEST_RUNTIME_FAULT !== frame.method) return false;
+  const always = process.env.MUSE_TEST_RUNTIME_FAULT_ALWAYS === "1";
+  const skip = Number(process.env.MUSE_TEST_RUNTIME_FAULT_SKIP || "0");
+  if ((always || !sawSessionResume()) && turnStartCount() !== skip) {
+    rpcError(
+      frame,
+      -32001,
+      "internal",
+      process.env.MUSE_TEST_RUNTIME_FAULT_MESSAGE ||
+        "event log failed: Origin read requires valid checkpoint-suffix",
+    );
     return true;
   }
   return false;
@@ -160,6 +152,57 @@ function turnStartCount() {
   } catch {
     return 0;
   }
+}
+// Prior turn/start frames sharing this commandId, current frame excluded:
+// a replay match means real Muse would serve the recorded result verbatim.
+function priorTurnStartsWith(commandId) {
+  if (!process.env.MUSE_TEST_REQUESTS) return 0;
+  try {
+    const requestLines = readFileSync(process.env.MUSE_TEST_REQUESTS, "utf8")
+      .split("\n")
+      .filter((line) => line.trim());
+    requestLines.pop();
+    return requestLines.filter((line) => {
+      if (!line.includes('"method":"turn/start"')) return false;
+      try {
+        return JSON.parse(line).params?.commandId === commandId;
+      } catch {
+        return false;
+      }
+    }).length;
+  } catch {
+    return 0;
+  }
+}
+function readOutputFaultResponse(frame) {
+  if (frame.method !== "item/readOutput" || !process.env.MUSE_TEST_READOUTPUT_FAULT) return false;
+  const fault = process.env.MUSE_TEST_READOUTPUT_FAULT;
+  if (fault === "nodata") {
+    send({
+      jsonrpc: "2.0",
+      id: frame.id,
+      error: { code: -32001, message: "item or attached output ref was not found" },
+    });
+  } else {
+    const messages = {
+      notFound: "item or attached output ref was not found",
+      outputUnavailable: "stored output is unavailable",
+    };
+    rpcError(frame, -32001, fault, messages[fault] || "boom");
+  }
+  // The fault replaces the fixture success response; still emit the rest of
+  // the readOutput window so the turn continues to its terminal.
+  const request = rows.find((row) => row.dir === "out" && row.msg.method === "item/readOutput");
+  if (request) {
+    const position = rows.indexOf(request);
+    let end = position + 1;
+    while (end < rows.length && !(rows[end].dir === "out" && rows[end].msg.method)) end++;
+    for (const row of rows.slice(position + 1, end).filter((r) => r.dir === "in")) {
+      if (!row.msg.method) continue;
+      emitFixtureMessage(row.msg, request.msg, frame);
+    }
+  }
+  return true;
 }
 function parityResponse(frame) {
   if (workflowResponse(frame)) return true;
@@ -394,24 +437,32 @@ function parityDelivery(message) {
 }
 function applyTestVariants(message) {
   applyParityVariants(message);
-  if (message.method === "turn/completed" && process.env.MUSE_TEST_INTERRUPT_TERMINAL)
-    message.params.terminal = process.env.MUSE_TEST_INTERRUPT_TERMINAL;
+  applyTerminalVariants(message);
   if (message.params?.availableChoices && process.env.MUSE_TEST_CHOICES)
     message.params.availableChoices = message.params.availableChoices.toReversed();
-  if (message.method === "turn/completed" && process.env.MUSE_TEST_AUTH_REQUIRED) {
+  if (message.result?.schema && process.env.MUSE_TEST_FINGERPRINT)
+    message.result.schema.fingerprint = process.env.MUSE_TEST_FINGERPRINT;
+  applyToolVariants(message);
+}
+function applyTerminalVariants(message) {
+  if (message.method !== "turn/completed") return;
+  if (process.env.MUSE_TEST_INTERRUPT_TERMINAL)
+    message.params.terminal = process.env.MUSE_TEST_INTERRUPT_TERMINAL;
+  if (process.env.MUSE_TEST_AUTH_REQUIRED) {
     message.params.terminal = "failed";
     message.params.error = { kind: "authRequired", message: "authentication expired" };
   }
-  if (message.method === "turn/completed" && process.env.MUSE_TEST_TERMINAL_FAULT) {
+  if (process.env.MUSE_TEST_TERMINAL_FAULT) {
     message.params.terminal = "failed";
     message.params.error = {
       kind: process.env.MUSE_TEST_TERMINAL_FAULT_KIND || "internal",
       message: process.env.MUSE_TEST_TERMINAL_FAULT,
     };
   }
-  if (message.result?.schema && process.env.MUSE_TEST_FINGERPRINT)
-    message.result.schema.fingerprint = process.env.MUSE_TEST_FINGERPRINT;
-  if (message.params?.item?.tool === "read_file" && process.env.MUSE_TEST_TOOL) {
+}
+function applyToolVariants(message) {
+  if (message.params?.item?.tool !== "read_file") return;
+  if (process.env.MUSE_TEST_TOOL) {
     message.params.item.tool = process.env.MUSE_TEST_TOOL;
     message.params.item.args = JSON.stringify({
       path: "f",
@@ -419,7 +470,7 @@ function applyTestVariants(message) {
       url: "https://example.com",
     });
   }
-  if (message.params?.item?.tool === "read_file" && process.env.MUSE_TEST_UNKNOWN_KIND) {
+  if (process.env.MUSE_TEST_UNKNOWN_KIND) {
     message.params.item.kind = "futureItem";
     message.params.item.fallbackText = "New MSP item";
   }

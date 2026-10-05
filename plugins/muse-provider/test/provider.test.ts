@@ -406,15 +406,15 @@ test("uploaded_file attachment passes a path reference as text instead of failin
     },
   });
   await h.wait((event) => event.type === "session.turn" && event.state === "completed", from);
-  const turns = (await h.recorded()).filter((frame) => frame.method === "turn/start");
+  const turn = (await h.recorded()).find((frame) => frame.method === "turn/start");
   const reference = [
     "Uploaded file: notes.txt",
     "Path: /tmp/uploads/notes.txt",
     "MIME: text/plain",
     "Size: 42 bytes",
   ].join("\n");
-  expect(turns[0].params.input).toContainEqual({ type: "text", text: reference });
-  expect(turns[0].params.displayText).toBe(`please read this\n${reference}`);
+  expect(turn?.params.input).toContainEqual({ type: "text", text: reference });
+  expect(turn?.params.displayText).toBe(`please read this\n${reference}`);
 });
 test("uploaded_file attachment without a path fails with a diagnostic instead of writing a file", async () => {
   const h = await harness("image-followup");
@@ -1422,7 +1422,25 @@ test("runtime fault on turn/start replaces the host and resubmits the turn once"
   expect(requests.filter((frame) => frame.method === "session/resume")).toHaveLength(1);
   const turns = requests.filter((frame) => frame.method === "turn/start");
   expect(turns).toHaveLength(2);
-  expect(turns[0].params.commandId).toBe(turns[1].params.commandId);
+  // Resubmit mints a fresh commandId: a same-id turn/start after resume is a
+  // value-identical replay on real Muse (verified against `muse serve` 1.4.2).
+  expect(turns[0].params.commandId).not.toBe(turns[1].params.commandId);
+});
+
+test("a same-commandId resubmit would dedupe-replay, so the fresh id runs the turn", async () => {
+  const h = await harness("text-reasoning", {
+    MUSE_TEST_RUNTIME_FAULT: "turn/start",
+    MUSE_TEST_DEDUPE_REPLAY: "1",
+  });
+  await h.open();
+  await h.prompt();
+  // With a same-id resubmit the fake host answers a bare replay (no events)
+  // and this turn never completes; the fresh id re-executes it.
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  const requests = await h.recorded();
+  const turns = requests.filter((frame) => frame.method === "turn/start");
+  expect(turns).toHaveLength(2);
+  expect(turns[0].params.commandId).not.toBe(turns[1].params.commandId);
 });
 
 test("runtime fault on a run terminal replaces the host without resubmitting", async () => {
