@@ -670,6 +670,26 @@ interface ClientActivity {
   appVisibilityChangedAt: Date;
 }
 
+/**
+ * Fan an out-of-session archive (MCP tool, hub) out to every connected
+ * session. Best-effort: the archive already succeeded, so a failing session
+ * is logged and skipped — this never rejects.
+ */
+export async function broadcastAgentArchiveToSessions(
+  sessions: Array<Pick<Session, "emitAgentArchiveForExternalMutation">>,
+  archived: ArchiveAgentResult,
+  logger: pino.Logger,
+): Promise<void> {
+  const results = await Promise.allSettled(
+    sessions.map((session) => session.emitAgentArchiveForExternalMutation(archived)),
+  );
+  for (const result of results) {
+    if (result.status === "rejected") {
+      logger.warn({ err: result.reason }, "Failed to broadcast agent archive to a session");
+    }
+  }
+}
+
 export class Session {
   readonly delivery = new SessionDelivery(
     (source, message) => {

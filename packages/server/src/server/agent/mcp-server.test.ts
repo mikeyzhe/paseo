@@ -6408,6 +6408,31 @@ describe("archive_agent broadcast", () => {
     });
   });
 
+  it("still succeeds when the archive broadcast throws", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const stored = createStoredRecord({ id: "archive-me", archivedAt: null });
+    spies.agentStorage.get.mockResolvedValue(stored);
+    (agentManager as unknown as Record<string, unknown>).archiveSnapshot = vi
+      .fn()
+      .mockImplementation(async (_agentId: string, archivedAt: string) => ({
+        ...stored,
+        archivedAt,
+      }));
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createClaudeOnlyManager(),
+      notifyAgentArchived: vi.fn().mockRejectedValue(new Error("boom")),
+      logger: createTestLogger(),
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "archive_agent"), {
+      agentId: "archive-me",
+    });
+
+    expect(response.structuredContent).toEqual({ success: true });
+  });
+
   it("stays silent when the host provides no notifyAgentArchived", async () => {
     const { agentManager, agentStorage, spies } = createTestDeps();
     spies.agentStorage.get.mockResolvedValue(createStoredRecord({ id: "archive-me" }));
