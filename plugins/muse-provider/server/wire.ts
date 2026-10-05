@@ -115,8 +115,28 @@ export const catalogSchema = z.object({
       contextLimit: z.number().nullable(),
       isDefault: z.boolean(),
       defaultReasoningEffort: effortSchema.nullable().optional(),
-      reasoningEffortVariants: z.union([z.array(effortSchema), z.literal("unknown")]).default([]),
-      variants: z.array(effortSchema).default([]),
+      // HOTFIX (2026-10-03, fleet-local): Muse 1.4.2 returns reasoningEffortVariants
+      // as [{tier: "xhigh", description: ...}, ...] instead of the 1.4.1-era
+      // string[]. Normalize object entries to their tier string so the catalog
+      // validates. Upstream plugin fix pending; remove when Paseo ships it.
+      reasoningEffortVariants: z
+        .preprocess(
+          (v) =>
+            Array.isArray(v)
+              ? v.map((e) => (typeof e === "object" && e !== null && "tier" in e ? e.tier : e))
+              : v,
+          z.union([z.array(effortSchema), z.literal("unknown")]),
+        )
+        .default([]),
+      variants: z
+        .preprocess(
+          (v) =>
+            Array.isArray(v)
+              ? v.map((e) => (typeof e === "object" && e !== null && "tier" in e ? e.tier : e))
+              : v,
+          z.array(effortSchema),
+        )
+        .default([]),
     }),
   ),
 });

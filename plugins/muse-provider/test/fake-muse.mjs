@@ -86,7 +86,65 @@ function controlResponse(frame) {
     rpcError(frame, -32020, "sessionNotFound", "missing");
     return true;
   }
+  if (process.env.MUSE_TEST_RUNTIME_FAULT === frame.method && !sawSessionResume()) {
+    rpcError(
+      frame,
+      -32001,
+      "internal",
+      process.env.MUSE_TEST_RUNTIME_FAULT_MESSAGE ||
+        "event log failed: Origin read requires valid checkpoint-suffix",
+    );
+    return true;
+  }
+  if (frame.method === "session/resume" && process.env.MUSE_TEST_RUNTIME_FAULT) {
+    // Recovery resume on scenarios whose fixture has no session/resume rows.
+    // Echo the requested sessionId so later fixture messages still match the
+    // adopted session, like the session/read and view/page handlers do.
+    const result = responseFor(readFixture("resume-with-cursor"), "session/resume");
+    result.session.sessionId = frame.params.sessionId;
+    respond(frame, result);
+    return true;
+  }
+  if (frame.method === "item/readOutput" && process.env.MUSE_TEST_READOUTPUT_FAULT) {
+    const fault = process.env.MUSE_TEST_READOUTPUT_FAULT;
+    if (fault === "nodata") {
+      send({
+        jsonrpc: "2.0",
+        id: frame.id,
+        error: { code: -32001, message: "item or attached output ref was not found" },
+      });
+    } else {
+      const messages = {
+        notFound: "item or attached output ref was not found",
+        outputUnavailable: "stored output is unavailable",
+      };
+      rpcError(frame, -32001, fault, messages[fault] || "boom");
+    }
+    // The fault replaces the fixture success response; still emit the rest of
+    // the readOutput window so the turn continues to its terminal.
+    const request = rows.find((row) => row.dir === "out" && row.msg.method === "item/readOutput");
+    if (request) {
+      const position = rows.indexOf(request);
+      let end = position + 1;
+      while (end < rows.length && !(rows[end].dir === "out" && rows[end].msg.method)) end++;
+      for (const row of rows.slice(position + 1, end).filter((r) => r.dir === "in")) {
+        if (!row.msg.method) continue;
+        emitFixtureMessage(row.msg, request.msg, frame);
+      }
+    }
+    return true;
+  }
   return false;
+}
+function sawSessionResume() {
+  if (!process.env.MUSE_TEST_REQUESTS) return false;
+  try {
+    return readFileSync(process.env.MUSE_TEST_REQUESTS, "utf8").includes(
+      '"method":"session/resume"',
+    );
+  } catch {
+    return false;
+  }
 }
 function parityResponse(frame) {
   if (workflowResponse(frame)) return true;
@@ -328,6 +386,10 @@ function applyTestVariants(message) {
   if (message.method === "turn/completed" && process.env.MUSE_TEST_AUTH_REQUIRED) {
     message.params.terminal = "failed";
     message.params.error = { kind: "authRequired", message: "authentication expired" };
+  }
+  if (message.method === "turn/completed" && process.env.MUSE_TEST_TERMINAL_FAULT) {
+    message.params.terminal = "failed";
+    message.params.error = { kind: "internal", message: process.env.MUSE_TEST_TERMINAL_FAULT };
   }
   if (message.result?.schema && process.env.MUSE_TEST_FINGERPRINT)
     message.result.schema.fingerprint = process.env.MUSE_TEST_FINGERPRINT;

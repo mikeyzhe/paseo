@@ -1340,3 +1340,91 @@ test("Muse window identity follows the reported duration instead of assuming fiv
     ],
   });
 });
+
+test("runtime fault on turn/start replaces the host and resubmits the turn once", async () => {
+  const h = await harness("text-reasoning", { MUSE_TEST_RUNTIME_FAULT: "turn/start" });
+  await h.open();
+  await h.prompt();
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  const requests = await h.recorded();
+  expect(requests.filter((frame) => frame.method === "session/resume")).toHaveLength(1);
+  const turns = requests.filter((frame) => frame.method === "turn/start");
+  expect(turns).toHaveLength(2);
+  expect(turns[0].params.commandId).toBe(turns[1].params.commandId);
+});
+
+test("runtime fault on a run terminal replaces the host without resubmitting", async () => {
+  const h = await harness("text-reasoning", {
+    MUSE_TEST_TERMINAL_FAULT: "event log failed: event id 7 conflicts with an existing event",
+  });
+  await h.open();
+  await h.prompt();
+  await h.wait((event) => event.type === "session.turn" && event.state === "failed");
+  // Terminal-triggered recovery runs detached; poll for the resume it must send.
+  let requests: Array<{ method?: string }> = [];
+  for (let i = 0; i < 200; i++) {
+    requests = await h.recorded();
+    if (requests.some((frame) => frame.method === "session/resume")) break;
+    await delay(10);
+  }
+  expect(requests.filter((frame) => frame.method === "session/resume")).toHaveLength(1);
+  expect(requests.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
+});
+
+for (const fault of ["notFound", "outputUnavailable", "nodata"]) {
+  test(`readOutput ${fault} renders the edit without a diff and completes the turn`, async () => {
+    const h = await harness("tools-edit", { MUSE_TEST_READOUTPUT_FAULT: fault });
+    await h.open();
+    await h.prompt();
+    await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+    const edits = h.events.filter(
+      (event) =>
+        event.type === "timeline.item" &&
+        (event as { item?: { detail?: { type?: string } } }).item?.detail?.type === "edit" &&
+        (event as { item?: { status?: string } }).item?.status === "completed",
+    );
+    expect(edits.length).toBeGreaterThan(0);
+    for (const edit of edits) {
+      expect(
+        (edit as { item: { detail: { unifiedDiff?: unknown } } }).item.detail.unifiedDiff,
+      ).toBeUndefined();
+    }
+  });
+}
+
+test("readOutput success renders the edit with its diff", async () => {
+  const h = await harness("tools-edit");
+  await h.open();
+  await h.prompt();
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  const edits = h.events.filter(
+    (event) =>
+      event.type === "timeline.item" &&
+      (event as { item?: { detail?: { type?: string } } }).item?.detail?.type === "edit" &&
+      (event as { item?: { status?: string } }).item?.status === "completed",
+  );
+  expect(edits.length).toBeGreaterThan(0);
+  for (const edit of edits) {
+    expect(
+      (edit as { item: { detail: { unifiedDiff?: unknown } } }).item.detail.unifiedDiff,
+    ).toEqual(expect.any(String));
+  }
+});
+
+test("readOutput internal errors still surface runtime_failed unchanged", async () => {
+  const h = await harness("tools-edit", { MUSE_TEST_READOUTPUT_FAULT: "internal" });
+  await h.open();
+  await h.prompt();
+  expect(await h.wait((event) => event.type === "session.runtime_failed")).toMatchObject({
+    error: { code: "internal" },
+  });
+  // The completed edit item is not emitted when its patch fetch hard-fails.
+  expect(
+    h.events.filter(
+      (event) =>
+        event.type === "timeline.item" &&
+        (event as { item?: { detail?: { type?: string } } }).item?.detail?.type === "edit" &&
+        (event as { item?: { status?: string } }).item?.status === "completed",
+    ),
+  ).toEqual([]);
+});
