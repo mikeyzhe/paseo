@@ -2242,7 +2242,13 @@ function createToolCatalog(
         },
         agentId,
       );
-      await options.notifyAgentArchived?.(archived);
+      // Best-effort: the archive already succeeded, so a broadcast failure
+      // must never fail the tool call.
+      try {
+        await options.notifyAgentArchived?.(archived);
+      } catch (error) {
+        childLogger.warn({ err: error }, "Failed to broadcast agent archive");
+      }
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
