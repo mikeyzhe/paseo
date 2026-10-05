@@ -222,6 +222,7 @@ import {
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
 import type { ArchiveAgentResult } from "./agent/lifecycle-command.js";
+import { broadcastAgentArchiveToSessions } from "./session.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -1080,11 +1081,7 @@ export async function createPaseoDaemon(
     );
   };
   const notifyAgentArchivedExternal = async (archived: ArchiveAgentResult) => {
-    await Promise.all(
-      (wsServer?.listSessions() ?? []).map((session) =>
-        session.emitAgentArchiveForExternalMutation(archived),
-      ),
-    );
+    await broadcastAgentArchiveToSessions(wsServer?.listSessions() ?? [], archived, logger);
   };
   const ensureWorkspaceForCreateAndBroadcastExternal = async (
     cwd: string,
