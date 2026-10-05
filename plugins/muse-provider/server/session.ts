@@ -369,7 +369,7 @@ export class Session {
       text.push(
         `/${prompt.input.name}${prompt.input.arguments ? ` ${prompt.input.arguments}` : ""}`,
       );
-    }     else
+    } else
       for (const part of prompt.input.content) {
         if (part.type === "text") {
           input.push({ type: "text", text: part.text });
