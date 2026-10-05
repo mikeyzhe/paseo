@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeInput } from "../../paseo-worktree-service.js";
@@ -10,7 +11,12 @@ import type {
   CreatePaseoWorktreeWorkflowFn,
   CreatePaseoWorktreeWorkflowResult,
 } from "../../worktree-session.js";
-import type { AgentAttachment, FirstAgentContext, GitSetupOptions } from "../../messages.js";
+import type {
+  AgentAttachment,
+  CreateAgentRequestMessage,
+  FirstAgentContext,
+  GitSetupOptions,
+} from "../../messages.js";
 import type { AgentManager, CreateAgentOptions, ManagedAgent } from "../agent-manager.js";
 import type { AgentPromptInput, AgentRunOptions, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentStorage } from "../agent-storage.js";
@@ -26,6 +32,8 @@ import {
   emitLiveTimelineItemIfAgentKnown,
 } from "../timeline-append.js";
 import { resolveCreateAgentIntent } from "./intent.js";
+
+export type AgentReusePolicy = NonNullable<CreateAgentRequestMessage["reusePolicy"]>;
 
 export interface CreateAgentSessionWorktreeResult {
   sessionConfig: AgentSessionConfig;
@@ -68,6 +76,8 @@ export interface CreateAgentFromSessionInput {
   git?: GitSetupOptions;
   labels: Record<string, string>;
   env?: Record<string, string>;
+  callerAgentId?: string;
+  reusePolicy?: AgentReusePolicy;
   provisionalTitle: string | null;
   firstAgentContext: FirstAgentContext;
   buildSessionConfig: (
@@ -104,6 +114,7 @@ export interface CreateAgentFromMcpInput {
   }) => void;
   onWorktreeCreated?: (createdWorktree: CreatePaseoWorktreeWorkflowResult) => void;
   callerAgentId?: string;
+  reusePolicy?: AgentReusePolicy;
   callerContext?: {
     lockedCwd?: string;
     allowCustomCwd?: boolean;
@@ -128,6 +139,7 @@ export interface CreateAgentCommandResult {
   background: boolean;
   initialPromptStarted: boolean;
   initialPromptError: unknown | null;
+  disposition: "created" | "reused";
   createdWorktree?: CreatePaseoWorktreeWorkflowResult;
 }
 
@@ -181,50 +193,101 @@ export async function createAgentCommand(
       ? await resolveSessionCreateAgent(dependencies, input)
       : await resolveMcpCreateAgent(dependencies, input);
 
-  const snapshot = await dependencies.agentManager.createAgent(
-    resolved.config,
-    input.kind === "session" ? input.agentId : undefined,
-    resolved.createOptions,
-  );
+  const reusable = await resolveReusableAgent(dependencies.agentManager, input, resolved);
+  const disposition = reusable ? "reused" : "created";
+  const snapshot =
+    reusable ??
+    (await dependencies.agentManager.createAgent(
+      resolved.config,
+      input.kind === "session" ? input.agentId : undefined,
+      resolved.createOptions,
+    ));
 
-  resolved.setupContinuation?.startAfterAgentCreate({
-    agentId: snapshot.id,
+  try {
+    if (disposition === "created") {
+      resolved.setupContinuation?.startAfterAgentCreate({
+        agentId: snapshot.id,
+      });
+      if (input.kind === "mcp") {
+        input.onCreated?.({
+          agentId: snapshot.id,
+          createdWorktree: resolved.createdWorktree ?? null,
+        });
+      }
+    }
+
+    if (input.kind === "session") await input.onAgentReady?.(snapshot);
+
+    let liveSnapshot = snapshot;
+    let initialPromptStarted = false;
+    let initialPromptError: unknown | null = null;
+    if (resolved.prompt !== undefined) {
+      const sendResult = await sendInitialPrompt(
+        dependencies,
+        resolved,
+        snapshot,
+        disposition === "reused",
+      );
+      initialPromptStarted = sendResult.started;
+      liveSnapshot = sendResult.liveSnapshot;
+      initialPromptError = sendResult.error ?? null;
+    }
+
+    if (
+      input.kind === "mcp" &&
+      input.notifyOnFinish &&
+      input.callerAgentId &&
+      initialPromptStarted
+    ) {
+      setupFinishNotification({
+        agentManager: dependencies.agentManager,
+        agentStorage: dependencies.agentStorage,
+        childAgentId: snapshot.id,
+        callerAgentId: input.callerAgentId,
+        requireParentOwnership: true,
+        logger: dependencies.logger,
+      });
+    }
+
+    return {
+      snapshot,
+      liveSnapshot,
+      background: resolved.background,
+      initialPromptStarted,
+      initialPromptError,
+      disposition,
+      ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
+    };
+  } finally {
+    if (reusable) {
+      dependencies.agentManager.releaseReusableAgentClaim(reusable.id);
+    }
+  }
+}
+
+async function resolveReusableAgent(
+  agentManager: AgentManager,
+  input: CreateAgentCommandInput,
+  resolved: ResolvedCreateAgent,
+): Promise<ManagedAgent | null> {
+  if (
+    input.reusePolicy === "fresh" ||
+    !input.callerAgentId ||
+    resolved.prompt === undefined ||
+    resolved.setupContinuation ||
+    resolved.createdWorktree ||
+    input.env ||
+    (input.kind === "mcp" && input.owner !== undefined) ||
+    resolved.createOptions.labels?.[PARENT_AGENT_ID_LABEL] !== input.callerAgentId
+  ) {
+    return null;
+  }
+  return agentManager.claimReusableAgent({
+    parentAgentId: input.callerAgentId,
+    workspaceId: requireResolvedWorkspaceId(resolved.createOptions.workspaceId),
+    config: resolved.config,
+    labels: resolved.createOptions.labels ?? {},
   });
-
-  if (input.kind === "session") await input.onAgentReady?.(snapshot);
-
-  let liveSnapshot = snapshot;
-  let initialPromptStarted = false;
-  let initialPromptError: unknown | null = null;
-  if (input.kind === "mcp") {
-    input.onCreated?.({ agentId: snapshot.id, createdWorktree: resolved.createdWorktree ?? null });
-  }
-  if (resolved.prompt !== undefined) {
-    const sendResult = await sendInitialPrompt(dependencies, resolved, snapshot);
-    initialPromptStarted = sendResult.started;
-    liveSnapshot = sendResult.liveSnapshot;
-    initialPromptError = sendResult.error ?? null;
-  }
-
-  if (input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId && initialPromptStarted) {
-    setupFinishNotification({
-      agentManager: dependencies.agentManager,
-      agentStorage: dependencies.agentStorage,
-      childAgentId: snapshot.id,
-      callerAgentId: input.callerAgentId,
-      requireParentOwnership: true,
-      logger: dependencies.logger,
-    });
-  }
-
-  return {
-    snapshot,
-    liveSnapshot,
-    background: resolved.background,
-    initialPromptStarted,
-    initialPromptError,
-    ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
-  };
 }
 
 async function resolveSessionCreateAgent(
@@ -452,6 +515,7 @@ async function sendInitialPrompt(
   dependencies: CreateAgentCommandDependencies,
   resolved: ResolvedCreateAgent,
   snapshot: ManagedAgent,
+  reusableClaim: boolean,
 ): Promise<{ started: boolean; liveSnapshot: ManagedAgent; error?: unknown }> {
   try {
     const prompt = resolved.prompt;
@@ -464,6 +528,7 @@ async function sendInitialPrompt(
       snapshot,
       prompt,
       runOptions: resolved.runOptions,
+      reusableClaim,
       logger: resolved.promptLogger ?? dependencies.logger,
     });
     return { started: true, liveSnapshot };

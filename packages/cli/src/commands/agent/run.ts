@@ -28,6 +28,7 @@ export function addRunOptions(cmd: Command): Command {
       .description("Create and start an agent with a task")
       .argument("<prompt>", "The task/prompt for the agent")
       .option("-d, --background", "Run in background")
+      .option("--fresh", "Always create a new agent instead of reusing a compatible idle child")
       // COMPAT(detachRunFlag): --detach used to mean background execution, not
       // ownership transfer. Added in v0.2.0; remove after 2027-01-17.
       .addOption(new Option("--detach", "Legacy alias for --background").hideHelp())
@@ -112,6 +113,7 @@ export const agentRunSchema: OutputSchema<AgentRunResult> = {
 
 export interface AgentRunOptions extends CommandOptions {
   background?: boolean;
+  fresh?: boolean;
   detach?: boolean;
   title?: string;
   name?: string;
@@ -626,6 +628,7 @@ export async function runRunCommand(
             cwd: runCwd,
             workspaceId,
             callerAgentId,
+            reusePolicy: options.fresh ? "fresh" : undefined,
             title: resolvedTitle,
             modeId: options.mode,
             model: resolvedProviderModel.model,
@@ -697,6 +700,7 @@ export async function runRunCommand(
       cwd: runCwd,
       workspaceId,
       callerAgentId,
+      reusePolicy: options.fresh ? "fresh" : undefined,
       title: resolvedTitle,
       modeId: options.mode,
       model: resolvedProviderModel.model,

@@ -3015,6 +3015,7 @@ test("sends create_agent_request with workspace and caller identity", async () =
     cwd: "/tmp/project/.paseo/worktrees/feature-a",
     workspaceId: "ws-feature-a",
     callerAgentId: "parent-agent",
+    reusePolicy: "fresh",
     title: "Compat agent",
     modeId: "default",
   });
@@ -3027,6 +3028,7 @@ test("sends create_agent_request with workspace and caller identity", async () =
       idempotencyKey: "one-creation",
       workspaceId: "ws-feature-a",
       callerAgentId: "parent-agent",
+      reusePolicy: "fresh",
     }),
   );
 

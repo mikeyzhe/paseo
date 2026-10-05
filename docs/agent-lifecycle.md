@@ -52,7 +52,21 @@ Accepting new work after an ambiguous interruption would create a split-brain se
 
 ## Relationships
 
-Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.
+Agents can delegate through the agent-scoped `create_agent` MCP tool or an agent-scoped `paseo run`. `create_agent` starts the delegated turn asynchronously; `paseo run` waits unless passed `--background`. Both surfaces stamp `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.
+
+Agent-scoped creation defaults to an atomic reuse-or-create admission. The daemon first claims one
+compatible idle direct child, then dispatches the new prompt into that existing conversation. A
+candidate must belong to the same parent and workspace, have no active run or pending permission,
+and exactly match the requested provider, model, mode, thinking, features, provider options, tool
+policy, system prompt, MCP servers, and non-tab labels. If context-window usage is known, at least
+20% must remain. Paseo prefers the eligible child with the most context remaining, then the one
+least recently used. The in-memory claim is exclusive until prompt dispatch reserves the new run,
+so concurrent delegations cannot select the same child.
+
+Paseo creates a fresh child when no compatible child exists, the request has no explicit model,
+the caller requests a new workspace or worktree, the child is detached, environment overrides or
+auto-archive are requested, or the caller sets `reusePolicy: "fresh"` / passes `paseo run --fresh`.
+Top-level human launches, schedules, and other creation without a managed caller remain fresh.
 
 - **Subagents** — exist as part of the creating agent's work, appear in that agent's subagent track, and are archived with it.
 - **Detached agents** — stand on their own after an explicit detach transition, do not appear in the former parent's subagent track, and are not archived with it.
@@ -91,7 +105,7 @@ Archive is a **soft delete**: the agent record stays on disk with `archivedAt` s
 Archive sets `archivedAt`, invokes the provider's native archive hook, and cascades to managed
 children.
 
-`create_agent_request` can opt an agent into `autoArchive`. In that mode the daemon archives the agent after the first terminal turn event (`turn_completed`, `turn_failed`, or `turn_canceled`). When the agent owns an isolated workspace, auto-archive archives that workspace too; the managed worktree is removed when its final workspace reference is gone.
+`create_agent_request` can opt an agent into `autoArchive`. Auto-archive forces fresh creation. In that mode the daemon archives the agent after the first terminal turn event (`turn_completed`, `turn_failed`, or `turn_canceled`). When the agent owns an isolated workspace, auto-archive archives that workspace too; the managed worktree is removed when its final workspace reference is gone.
 
 Archiving runs through `AgentManager.archiveAgent` (`packages/server/src/server/agent/agent-manager.ts`):
 

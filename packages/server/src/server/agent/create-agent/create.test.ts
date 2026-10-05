@@ -227,6 +227,223 @@ test("mcp create accepts provider-only internal input and leaves model undefined
   );
 });
 
+test("agent-scoped mcp create reuses a compatible idle child by default", async () => {
+  const reusable = {
+    id: "reusable-child",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+    lifecycle: "idle",
+    currentModeId: "full-access",
+    availableModes: [],
+    config: {
+      provider: "codex",
+      cwd: "/tmp/paseo-create-test",
+      model: "gpt-5.4",
+      modeId: "full-access",
+    },
+    labels: { "paseo.parent-agent-id": "parent-agent" },
+  } as ManagedAgent;
+  const claimReusableAgent = vi.fn(() => reusable);
+  const releaseReusableAgentClaim = vi.fn();
+  const createAgent = vi.fn();
+  const parent = {
+    id: "parent-agent",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+  } as ManagedAgent;
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      claimReusableAgent,
+      releaseReusableAgentClaim,
+      createAgent,
+      getAgent: vi.fn((agentId: string) => (agentId === "parent-agent" ? parent : reusable)),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      streamClaimedReusableAgent: vi.fn(() => (async function* noop() {})()),
+      streamAgent: vi.fn(() => (async function* noop() {})()),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: {
+      resolveCreateConfig: vi.fn(async () => ({
+        modeId: "full-access",
+      })),
+    } as Parameters<typeof createAgentCommand>[0]["providerSnapshotManager"],
+  };
+
+  const result = await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "codex/gpt-5.4",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+    title: "new task title",
+    initialPrompt: "do the next thing",
+    background: true,
+    notifyOnFinish: false,
+    callerAgentId: "parent-agent",
+  });
+
+  expect(result.disposition).toBe("reused");
+  expect(result.snapshot.id).toBe("reusable-child");
+  expect(createAgent).not.toHaveBeenCalled();
+  expect(claimReusableAgent).toHaveBeenCalledWith({
+    parentAgentId: "parent-agent",
+    workspaceId: "ws-create-test",
+    config: expect.objectContaining({
+      provider: "codex",
+      model: "gpt-5.4",
+      modeId: "full-access",
+    }),
+    labels: { "paseo.parent-agent-id": "parent-agent" },
+  });
+  expect(releaseReusableAgentClaim).toHaveBeenCalledWith("reusable-child");
+});
+
+test("agent-scoped mcp create honors an explicit fresh reuse policy", async () => {
+  const created = {
+    id: "fresh-child",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+    lifecycle: "idle",
+    currentModeId: "full-access",
+    availableModes: [],
+    config: {
+      provider: "codex",
+      cwd: "/tmp/paseo-create-test",
+      model: "gpt-5.4",
+      modeId: "full-access",
+    },
+    labels: { "paseo.parent-agent-id": "parent-agent" },
+  } as ManagedAgent;
+  const claimReusableAgent = vi.fn();
+  const createAgent = vi.fn(async () => created);
+  const parent = {
+    id: "parent-agent",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+  } as ManagedAgent;
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      claimReusableAgent,
+      releaseReusableAgentClaim: vi.fn(),
+      createAgent,
+      getAgent: vi.fn((agentId: string) => (agentId === "parent-agent" ? parent : created)),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      streamClaimedReusableAgent: vi.fn(() => (async function* noop() {})()),
+      streamAgent: vi.fn(() => (async function* noop() {})()),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: {
+      resolveCreateConfig: vi.fn(async () => ({ modeId: "full-access" })),
+    } as Parameters<typeof createAgentCommand>[0]["providerSnapshotManager"],
+  };
+
+  const result = await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "codex/gpt-5.4",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+    title: "parallel task",
+    initialPrompt: "work independently",
+    background: true,
+    notifyOnFinish: false,
+    callerAgentId: "parent-agent",
+    reusePolicy: "fresh",
+  });
+
+  expect(result.disposition).toBe("created");
+  expect(claimReusableAgent).not.toHaveBeenCalled();
+  expect(createAgent).toHaveBeenCalledOnce();
+
+  claimReusableAgent.mockClear();
+  createAgent.mockClear();
+  const ownedResult = await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "codex/gpt-5.4",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+    title: "owned task",
+    initialPrompt: "run under daemon ownership",
+    background: true,
+    notifyOnFinish: false,
+    callerAgentId: "parent-agent",
+    owner: { kind: "daemon", daemonId: "daemon-1", executionId: "execution-1" },
+  });
+
+  expect(ownedResult.disposition).toBe("created");
+  expect(claimReusableAgent).not.toHaveBeenCalled();
+  expect(createAgent).toHaveBeenCalledOnce();
+});
+
+test("agent-scoped session create reuses a compatible idle child", async () => {
+  const reusable = {
+    id: "cli-reusable-child",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    workspaceId: "ws-create-test",
+    lifecycle: "idle",
+    currentModeId: "full-access",
+    availableModes: [],
+    config: {
+      provider: "codex",
+      cwd: "/tmp/paseo-create-test",
+      model: "gpt-5.4",
+      modeId: "full-access",
+    },
+    labels: { "paseo.parent-agent-id": "parent-agent" },
+  } as ManagedAgent;
+  const claimReusableAgent = vi.fn(() => reusable);
+  const createAgent = vi.fn();
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      claimReusableAgent,
+      releaseReusableAgentClaim: vi.fn(),
+      createAgent,
+      getAgent: vi.fn(() => reusable),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      streamClaimedReusableAgent: vi.fn(() => (async function* noop() {})()),
+      streamAgent: vi.fn(() => (async function* noop() {})()),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: {
+      resolveCreateConfig: vi.fn(async () => ({ modeId: "full-access" })),
+    } as Parameters<typeof createAgentCommand>[0]["providerSnapshotManager"],
+  };
+
+  const result = await createAgentCommand(dependencies, {
+    kind: "session",
+    config: {
+      provider: "codex",
+      cwd: "/tmp/paseo-create-test",
+      model: "gpt-5.4",
+      modeId: "full-access",
+    },
+    workspaceId: "ws-create-test",
+    initialPrompt: "run from the managed CLI",
+    labels: { "paseo.parent-agent-id": "parent-agent" },
+    callerAgentId: "parent-agent",
+    provisionalTitle: "new helper title",
+    firstAgentContext: { attachments: [] },
+    buildSessionConfig: async (config) => ({ sessionConfig: config }),
+  });
+
+  expect(result.disposition).toBe("reused");
+  expect(result.snapshot.id).toBe("cli-reusable-child");
+  expect(claimReusableAgent).toHaveBeenCalledOnce();
+  expect(createAgent).not.toHaveBeenCalled();
+});
+
 test("session create stamps the requested workspaceId when no worktree setup runs", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "create-agent-test-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);

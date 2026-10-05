@@ -233,6 +233,8 @@ function buildAgentManagerSpies() {
     notifyAgentState: vi.fn(),
     getAgent: vi.fn(),
     listAgents: vi.fn().mockReturnValue([]),
+    claimReusableAgent: vi.fn().mockReturnValue(null),
+    releaseReusableAgentClaim: vi.fn(),
     getTimeline: vi.fn().mockReturnValue([]),
     resumeAgentFromPersistence: vi.fn(),
     hydrateTimelineFromProvider: vi.fn().mockResolvedValue(undefined),
@@ -242,6 +244,7 @@ function buildAgentManagerSpies() {
     tryRunOutOfBand: vi.fn().mockReturnValue(false),
     subscribe: vi.fn().mockReturnValue(() => {}),
     streamAgent: vi.fn(() => (async function* noop() {})()),
+    streamClaimedReusableAgent: vi.fn(() => (async function* noop() {})()),
     waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
     respondToPermission: vi.fn(),
     cancelAgentRun: vi.fn(),
@@ -3175,6 +3178,7 @@ describe("create_agent MCP tool", () => {
       relationship: { kind: "subagent" },
       workspace: { kind: "current" },
       notifyOnFinish: true,
+      reusePolicy: "compatible",
     });
   });
 
@@ -3221,6 +3225,59 @@ describe("create_agent MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
+  });
+
+  it("returns reused when caller creation claims an idle direct child", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const parentAgent = {
+      id: "parent-agent",
+      cwd: existingCwd,
+      workspaceId: "wks_parent",
+      provider: "codex",
+      currentModeId: "full-access",
+    } as ManagedAgent;
+    const childAgent = {
+      id: "existing-child",
+      provider: "codex",
+      cwd: existingCwd,
+      workspaceId: "wks_parent",
+      lifecycle: "idle",
+      currentModeId: "full-access",
+      availableModes: [],
+      config: {
+        provider: "codex",
+        cwd: existingCwd,
+        model: "gpt-5.4",
+        modeId: "full-access",
+      },
+      labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" },
+    } as ManagedAgent;
+    spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "parent-agent" ? parentAgent : childAgent,
+    );
+    spies.agentManager.claimReusableAgent.mockReturnValue(childAgent);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "parent-agent",
+      logger,
+    });
+
+    const response = await registeredTool(server, "create_agent").handler({
+      ...subagentCurrentWorkspace(),
+      title: "Next child task",
+      provider: "codex/gpt-5.4",
+      settings: { modeId: "full-access" },
+      initialPrompt: "Continue with the next task",
+    });
+
+    expect(response.structuredContent).toMatchObject({
+      agentId: "existing-child",
+      disposition: "reused",
+    });
+    expect(spies.agentManager.createAgent).not.toHaveBeenCalled();
+    expect(spies.agentManager.releaseReusableAgentClaim).toHaveBeenCalledWith("existing-child");
   });
 
   it("creates detached caller agents without a parent label", async () => {

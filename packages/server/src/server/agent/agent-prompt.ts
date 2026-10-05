@@ -24,7 +24,7 @@ export type AgentRunController = Pick<
   | "streamAgent"
 > & {
   reloadAgentSession(agentId: string): Promise<unknown>;
-};
+} & Partial<Pick<AgentManager, "streamClaimedReusableAgent">>;
 
 export interface StartAgentRunOptions {
   replaceRunning?: boolean;
@@ -32,6 +32,8 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
   /** Ask the provider to deny permissions blocking this steer. */
   clearPendingPermissions?: boolean;
+  /** Consume an exclusive compatible-child claim before dispatching this run. */
+  reusableClaim?: boolean;
 }
 
 export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
@@ -89,6 +91,33 @@ async function drainAgentRunIterator(
   }
 }
 
+function startClaimedReusableRun(
+  agentManager: AgentRunController,
+  agentId: string,
+  prompt: AgentPromptInput,
+  snapshot: ManagedAgent | null,
+  logger: Logger,
+  options: StartAgentRunOptions | undefined,
+): { disposition: "turn_started" } | null {
+  if (!options?.reusableClaim) {
+    return null;
+  }
+  if (!agentManager.streamClaimedReusableAgent) {
+    throw new Error(`Agent ${agentId} reuse admission is unavailable`);
+  }
+  const iterator = agentManager.streamClaimedReusableAgent(agentId, prompt, options.runOptions);
+  drainAgentRunIteratorInBackground(
+    agentManager,
+    agentId,
+    prompt,
+    snapshot,
+    logger,
+    options,
+    iterator,
+  );
+  return { disposition: "turn_started" };
+}
+
 export async function startAgentRun(
   agentManager: AgentRunController,
   agentId: string,
@@ -109,6 +138,17 @@ export async function startAgentRun(
     },
     "agent.session.start_stream.request",
   );
+  const reusableRun = startClaimedReusableRun(
+    agentManager,
+    agentId,
+    prompt,
+    snapshot,
+    logger,
+    options,
+  );
+  if (reusableRun) {
+    return reusableRun;
+  }
   // Out-of-band commands (e.g. /goal pause) must run WITHOUT canceling an
   // in-flight turn — replaceAgentRun would interrupt the running turn. The
   // intercept lives at this layer so it covers every prompt entrypoint.
@@ -151,6 +191,27 @@ async function startAgentRunInner(
     },
     "agent.session.start_stream.iterator_returned",
   );
+  drainAgentRunIteratorInBackground(
+    agentManager,
+    agentId,
+    prompt,
+    snapshot,
+    logger,
+    options,
+    iterator,
+  );
+  return { disposition: "turn_started" };
+}
+
+function drainAgentRunIteratorInBackground(
+  agentManager: AgentRunController,
+  agentId: string,
+  prompt: AgentPromptInput,
+  snapshot: ManagedAgent | null,
+  logger: Logger,
+  options: StartAgentRunOptions | undefined,
+  iterator: AsyncGenerator<import("./agent-sdk-types.js").AgentStreamEvent>,
+): void {
   void (async () => {
     try {
       try {
@@ -186,7 +247,6 @@ async function startAgentRunInner(
       logger.error({ err: error, agentId }, "Agent stream failed");
     }
   })();
-  return { disposition: "turn_started" };
 }
 
 /**
@@ -249,6 +309,7 @@ export interface StartCreatedAgentInitialPromptParams {
   snapshot?: ManagedAgent;
   prompt: AgentPromptInput | null;
   runOptions?: AgentRunOptions;
+  reusableClaim?: boolean;
   logger: Logger;
 }
 
@@ -357,6 +418,7 @@ export async function startCreatedAgentInitialPrompt(
     params.logger,
     {
       runOptions: params.runOptions,
+      reusableClaim: params.reusableClaim,
     },
   );
 
