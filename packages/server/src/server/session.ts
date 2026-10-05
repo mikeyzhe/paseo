@@ -3982,11 +3982,12 @@ export class Session {
         },
         createAgent: async (id, _workspace, onReady) => {
           try {
-            return await this.createSessionAgent(
+            const result = await this.createSessionAgent(
               { ...request, type: "create_agent_request" },
               id,
               onReady,
             );
+            return result.agent;
           } catch (error) {
             throw new WorktreeRequestError(toWorktreeWireError(error));
           }
@@ -4098,7 +4099,7 @@ export class Session {
                   isAbsolute(relativeCwd)
                 )
                   throw new Error("Agent directory must be inside the workspace source");
-                return this.createSessionAgent(
+                const result = await this.createSessionAgent(
                   {
                     ...agentInput,
                     type: "create_agent_request",
@@ -4112,6 +4113,7 @@ export class Session {
                   id,
                   onReady,
                 );
+                return result.agent;
               }
             : undefined,
         },
