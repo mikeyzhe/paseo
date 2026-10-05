@@ -13,7 +13,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import type { z } from "zod";
 import { MspConnection, commandId, type Notification } from "./connection.js";
-import { MuseError, actionableError } from "./errors.js";
+import { MuseError, actionableError, isMuseRuntimeFault } from "./errors.js";
 import { Timeline, todoItem } from "./timeline.js";
 import { modes, efforts, presentCatalog } from "./catalog.js";
 import {
@@ -64,7 +64,7 @@ interface Live {
 }
 
 export class Session {
-  private readonly host: MspConnection;
+  private host: MspConnection;
   private liveState: Live | undefined;
   private providerId: string | undefined;
   private config: ProviderSessionConfig;
@@ -77,6 +77,15 @@ export class Session {
   private opening = true;
   private closing = false;
   private firstTurn = true;
+  // HOTFIX (2026-10-05, fleet-local): Muse #79 — loop guards for host-
+  // replacement recovery: at most one recovery per session per 5 minutes and at
+  // most one fault resubmit per clientMessageId, so a persistently poisoned
+  // workspace surfaces its original error instead of looping. Remove when Paseo
+  // ships a fix.
+  private static readonly FAULT_RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
+  private lastFaultRecoveryAt = 0;
+  private readonly resubmittedMessageIds = new Set<string>();
+  private readonly hostOptions: { launch: ProviderLaunch; cwd?: string; serveArgs?: string[] };
   private interruptCompletion: {
     turnId: string;
     resolve(): void;
@@ -85,37 +94,38 @@ export class Session {
 
   constructor(private readonly options: SessionOptions) {
     this.config = options.config;
-    this.host = new MspConnection({
+    this.hostOptions = {
       launch: { ...options.launch, env: { ...options.launch.env, ...options.config.env } },
       cwd: options.config.cwd,
       serveArgs: options.serveArgs,
-    });
-    this.host.onNotification((notification) => {
+    };
+    this.host = this.spawnHost();
+  }
+
+  // HOTFIX (2026-10-05, fleet-local): Muse #79 — spawn and wire one host
+  // process; shared by the constructor and fault recovery so a replacement
+  // host gets identical listeners and launch options. Remove when Paseo ships
+  // a fix.
+  private spawnHost(): MspConnection {
+    const host = new MspConnection(this.hostOptions);
+    host.onNotification((notification) => {
       if (this.opening) this.buffered.push(notification);
       else this.enqueue(notification);
     });
-    this.host.onExit((error) => {
+    host.onExit((error) => {
       if (!this.opening && !this.closing) this.runtimeFailed(error);
     });
+    return host;
   }
 
   async open(input: Extract<ProviderInput, { type: "session.open" }>): Promise<void> {
     await this.host.initialize();
-    const mcpServers = Object.fromEntries(
-      Object.entries(this.config.mcpServers).map(([id, server]) => [id, mcpServer(server)]),
-    );
     let response;
     if (input.persistence) {
       if (input.persistence.version !== 1)
         throw new MuseError("invalidPersistence", "Unsupported Muse persistence version");
       const saved = persistenceSchema.parse(input.persistence.data);
-      // A fresh timeline needs history. MSP cursor resumes return only the suffix,
-      // so even legacy persistence cursors cannot restore this session's projection.
-      response = await this.host.command(
-        "session/resume",
-        { sessionId: saved.sessionId, config: { mcpServers } },
-        sessionSchema,
-      );
+      response = await this.resumeSession(saved.sessionId, saved.cursor);
       this.config = {
         ...this.config,
         model: this.config.model ?? saved.model,
@@ -129,7 +139,7 @@ export class Session {
           workspaceRoot: this.config.cwd,
           modelId: this.config.model,
           approvalMode: approvalModeSchema.parse(this.config.mode ?? "onRequest"),
-          config: { mcpServers },
+          config: this.mcpServersParam(),
         },
         sessionSchema,
       );
@@ -139,41 +149,7 @@ export class Session {
         "emptyViewCursor",
         "Muse returned an empty resume viewCursor; this session cannot be watched.",
       );
-    const nativeId = response.session.sessionId;
-    this.liveState = {
-      nativeId,
-      children: new Children(this.host, this.options.id, this.config.cwd, this.options.emit),
-      timeline: new Timeline(
-        this.host,
-        nativeId,
-        this.options.id,
-        this.options.emit,
-        (messageCommandId) => this.messages.get(messageCommandId),
-      ),
-      questions: new Questions(this.host, nativeId, this.options.id, this.options.emit),
-      commands: new Commands(this.host, nativeId, this.options.id, this.options.emit),
-      recovery: new Recovery(
-        this.host,
-        nativeId,
-        response.viewCursor,
-        (event) => this.notify(event),
-        () => {
-          this.notifications = this.notifications
-            .then(async () => {
-              const live = this.live();
-              await live.recovery.backfill();
-              return live.children.refresh();
-            })
-            .catch((error) => this.runtimeFailed(error));
-        },
-      ),
-    };
-    this.providerId = response.session.providerId ?? undefined;
-    this.config = {
-      ...this.config,
-      model: response.session.modelId ?? this.config.model,
-      mode: response.session.approvalMode?.mode ?? this.config.mode ?? "onRequest",
-    };
+    this.adoptSession(response);
     this.options.emit({
       type: "session.opened",
       requestId: input.requestId,
@@ -208,6 +184,132 @@ export class Session {
   private live(): Live {
     if (!this.liveState) throw new MuseError("sessionNotOpen", "Muse session is not open");
     return this.liveState;
+  }
+
+  private mcpServersParam(): { mcpServers: Record<string, SessionMcpServerConfig> } {
+    return {
+      mcpServers: Object.fromEntries(
+        Object.entries(this.config.mcpServers).map(([id, server]) => [id, mcpServer(server)]),
+      ),
+    };
+  }
+
+  // HOTFIX (2026-10-05, fleet-local): Muse #79 — open()'s session/resume
+  // branch extracted so host-replacement recovery resumes with exactly the
+  // same params (sessionId + latest cursor + config.mcpServers). Remove when
+  // Paseo ships a fix.
+  private async resumeSession(
+    sessionId: string,
+    cursor: string | undefined,
+  ): Promise<z.infer<typeof sessionSchema>> {
+    return this.host.command(
+      "session/resume",
+      { sessionId, cursor, config: this.mcpServersParam() },
+      sessionSchema,
+    );
+  }
+
+  // HOTFIX (2026-10-05, fleet-local): Muse #79 — open()'s liveState wiring
+  // extracted so a replacement host re-adopts the session with identical
+  // children/timeline/questions/commands/recovery listeners. Remove when Paseo
+  // ships a fix.
+  private adoptSession(response: z.infer<typeof sessionSchema>): void {
+    const nativeId = response.session.sessionId;
+    this.liveState = {
+      nativeId,
+      children: new Children(this.host, this.options.id, this.config.cwd, this.options.emit),
+      timeline: new Timeline(
+        this.host,
+        nativeId,
+        this.options.id,
+        this.options.emit,
+        (messageCommandId) => this.messages.get(messageCommandId),
+      ),
+      questions: new Questions(this.host, nativeId, this.options.id, this.options.emit),
+      commands: new Commands(this.host, nativeId, this.options.id, this.options.emit),
+      recovery: new Recovery(
+        this.host,
+        nativeId,
+        response.viewCursor,
+        (event) => this.notify(event),
+        () => {
+          this.notifications = this.notifications
+            .then(async () => {
+              const live = this.live();
+              await live.recovery.backfill();
+              return live.children.refresh();
+            })
+            .catch((error) => this.runtimeFailed(error));
+        },
+      ),
+    };
+    this.providerId = response.session.providerId;
+    this.cursor = response.viewCursor;
+    this.config = {
+      ...this.config,
+      model: response.session.modelId,
+      mode: response.session.approvalMode?.mode ?? this.config.mode ?? "onRequest",
+    };
+  }
+
+  // HOTFIX (2026-10-05, fleet-local): Muse #79 — replace a runtime-faulted
+  // `muse serve` process (event-log/MCP-audit poisoning is per-process, the
+  // on-disk session stays healthy): close the host tolerating errors, spawn a
+  // fresh one with the same launch options, initialize, session/resume the
+  // saved sessionId at the latest cursor, and re-wire liveState exactly as
+  // open() does. Returns false (caller surfaces the original error unchanged)
+  // when closing, when the 5-minute loop guard trips, or when the swap itself
+  // fails. Remove when Paseo ships a fix.
+  private async recoverRuntimeFault(faultMessage: string, willResubmit: boolean): Promise<boolean> {
+    if (this.closing || !this.liveState) return false;
+    const now = Date.now();
+    if (now - this.lastFaultRecoveryAt < Session.FAULT_RECOVERY_COOLDOWN_MS) return false;
+    this.lastFaultRecoveryAt = now;
+    const live = this.live();
+    const sessionId = live.nativeId;
+    this.opening = true;
+    try {
+      live.recovery.close();
+      // Drain in-flight notification handling first so the faulting terminal
+      // itself advances this.cursor before it is captured below.
+      await this.notifications;
+      const cursor = this.cursor;
+      try {
+        await this.host.close();
+      } catch {
+        /* Tolerate errors closing the faulted host. */
+      }
+      this.host = this.spawnHost();
+      await this.host.initialize();
+      const response = await this.resumeSession(sessionId, cursor);
+      if (!response.viewCursor)
+        throw new MuseError(
+          "emptyViewCursor",
+          "Muse returned an empty resume viewCursor; this session cannot be watched.",
+        );
+      this.adoptSession(response);
+      await this.restorePending(response.pendingRequests);
+      this.opening = false;
+      for (const notification of this.buffered) this.enqueue(notification);
+      this.buffered.length = 0;
+      await this.notifications;
+      await this.live().commands.refresh();
+      this.publishPersistence();
+      process.stderr.write(
+        `[muse-provider HOTFIX #79] runtime fault "${faultMessage.slice(0, 120)}" → fresh muse serve, session ${sessionId} resumed (resubmit=${willResubmit ? "yes" : "no"})\n`,
+      );
+      return true;
+    } catch (error) {
+      this.buffered.length = 0;
+      this.opening = false;
+      process.stderr.write(
+        `[muse-provider HOTFIX #79] runtime fault recovery failed for session ${sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+      if (!this.closing) this.runtimeFailed(new MuseError("internal", faultMessage));
+      return false;
+    }
   }
 
   private async restorePending(
@@ -270,7 +372,26 @@ export class Session {
         ? effortSchema.parse(this.config.thinkingOption)
         : undefined,
     };
-    const response = await this.host.command("turn/start", params, promptResultSchema);
+    // HOTFIX (2026-10-05, fleet-local): Muse #79 — a turn/start rejected with
+    // an event-log/MCP-audit fault means the host process is poisoned: replace
+    // it (session/resume re-establishes state) and resubmit the same
+    // turn/start once. Any second fault, a used resubmit, or a blocked
+    // recovery surfaces the original error unchanged. Remove when Paseo ships
+    // a fix.
+    let response: z.infer<typeof promptResultSchema>;
+    try {
+      response = await this.host.command("turn/start", params, promptResultSchema);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !isMuseRuntimeFault(message) ||
+        this.resubmittedMessageIds.has(prompt.clientMessageId) ||
+        !(await this.recoverRuntimeFault(message, true))
+      )
+        throw error;
+      this.resubmittedMessageIds.add(prompt.clientMessageId);
+      response = await this.host.command("turn/start", params, promptResultSchema);
+    }
     this.firstTurn = false;
     if (response.disposition === "started" && this.turns.get(response.turnId) !== "completed")
       this.turns.set(response.turnId, "active");
@@ -534,6 +655,14 @@ export class Session {
       error,
     });
     if (this.interruptCompletion?.turnId === params.turnId) this.interruptCompletion.resolve();
+    // HOTFIX (2026-10-05, fleet-local): Muse #79 — a run terminal that failed
+    // with an event-log/MCP-audit fault poisoned only the host process;
+    // replace it and resume. Muse re-runs the pending failed turn itself
+    // after resume, so the prompt is NOT resubmitted (that would duplicate
+    // it); the failed turn above already surfaced to Paseo unchanged. Remove
+    // when Paseo ships a fix.
+    if (state === "failed" && params.error && isMuseRuntimeFault(params.error.message))
+      void this.recoverRuntimeFault(params.error.message, false).catch(() => {});
   }
 
   private async fold(item: WireItem): Promise<void> {

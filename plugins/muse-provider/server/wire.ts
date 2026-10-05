@@ -117,8 +117,16 @@ export const catalogSchema = z.object({
       defaultReasoningEffort: effortSchema.nullable().optional(),
       // Validate consumed fields only. Muse's described subset (reasoningEffortVariants)
       // is presentation metadata; its shape must not gate catalog discovery or session startup.
+      // HOTFIX (ported 2026-10-08): Muse still returns object-form entries
+      // ([{tier: ...}, ...]) — normalize to tier strings before validating.
       variants: z
-        .union([z.array(effortSchema), z.literal("unknown")])
+        .preprocess(
+          (v) =>
+            Array.isArray(v)
+              ? v.map((e) => (typeof e === "object" && e !== null && "tier" in e ? e.tier : e))
+              : v,
+          z.union([z.array(effortSchema), z.literal("unknown")]),
+        )
         .transform((variants) => (variants === "unknown" ? [] : variants))
         .default([]),
     }),
