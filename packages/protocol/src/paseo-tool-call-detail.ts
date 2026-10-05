@@ -46,6 +46,7 @@ const AGENT_FIELDS = [
   "sessionMode",
   "modeId",
   "background",
+  "reusePolicy",
   "notifyOnFinish",
   "settings",
   "labels",
@@ -99,7 +100,7 @@ const TOOL_SPECS: Readonly<Record<string, ToolDetailSpec>> = {
   create_agent: {
     promptField: "initialPrompt",
     inputOrder: AGENT_FIELDS,
-    outputFields: ["agentId", "status", "currentModeId", "cwd"],
+    outputFields: ["agentId", "disposition", "status", "currentModeId", "cwd"],
   },
   send_agent_prompt: {
     promptField: "prompt",
@@ -199,6 +200,8 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   prNumber: "Change request",
   projectId: "Project",
   removedDirectory: "Removed directory",
+  reusePolicy: "Reuse policy",
+  disposition: "Disposition",
   requestId: "Request",
   scriptName: "Script",
   sessionMode: "Session mode",

@@ -4158,6 +4158,7 @@ export class Session {
   private async handleCreateAgentRequest(msg: CreateAgentRequestMessage): Promise<void> {
     try {
       let agent: AgentSnapshotPayload;
+      let disposition: "created" | "reused" = "created";
       if (msg.idempotencyKey !== undefined) {
         if (msg.initialPrompt !== undefined) {
           throw new Error("Idempotent creation requires sending the initial prompt separately");
@@ -4172,7 +4173,9 @@ export class Session {
         if (!record) throw new Error("Previously created agent no longer exists");
         agent = this.buildStoredAgentPayload(record);
       } else {
-        agent = await this.createSessionAgent(msg);
+        const result = await this.createSessionAgent(msg);
+        agent = result.agent;
+        disposition = result.disposition;
       }
       this.emit({
         type: "status",
@@ -4181,6 +4184,7 @@ export class Session {
           agentId: agent.id,
           requestId: msg.requestId,
           agent,
+          disposition,
         },
       });
     } catch (error) {
@@ -4211,7 +4215,7 @@ export class Session {
     msg: CreateAgentRequestMessage,
     agentId?: string,
     onAgentReady?: (agent: AgentSnapshotPayload) => Promise<void>,
-  ): Promise<AgentSnapshotPayload> {
+  ): Promise<{ agent: AgentSnapshotPayload; disposition: "created" | "reused" }> {
     const {
       config,
       worktreeName,
@@ -4269,7 +4273,7 @@ export class Session {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
       }
 
-      const { snapshot, liveSnapshot } = await createAgentCommand(
+      const { snapshot, liveSnapshot, disposition } = await createAgentCommand(
         {
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
@@ -4296,13 +4300,15 @@ export class Session {
           git,
           labels: resolvedIntent.intent.labels,
           env,
+          callerAgentId: msg.callerAgentId,
+          reusePolicy: autoArchive ? "fresh" : msg.reusePolicy,
           provisionalTitle,
           firstAgentContext,
           buildSessionConfig: (sessionConfig, gitOptions, legacyWorktreeName, ctx) =>
             this.buildAgentSessionConfig(sessionConfig, gitOptions, legacyWorktreeName, ctx),
         },
       );
-      createdAgentId = snapshot.id;
+      createdAgentId = disposition === "created" ? snapshot.id : null;
       await this.agentUpdates.forwardLiveAgent(snapshot);
       if (resolvedIntent.createdDirectoryWorkspace && trimmedPrompt) {
         this.workspaceAutoName.scheduleForDirectory(
@@ -4321,9 +4327,9 @@ export class Session {
       });
       this.sessionLogger.info(
         { agentId: snapshot.id, provider: snapshot.provider },
-        "Created agent",
+        disposition === "reused" ? "Reused agent" : "Created agent",
       );
-      return this.buildAgentPayload(liveSnapshot);
+      return { agent: await this.buildAgentPayload(liveSnapshot), disposition };
     } catch (error) {
       await this.createAgentLifecycleDispatch.cleanupCreatedWorktreeAfterFailedAgentCreate({
         createdWorktree: createdWorktreeForCleanup,

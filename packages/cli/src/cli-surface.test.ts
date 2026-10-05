@@ -52,6 +52,11 @@ describe("canonical CLI surface", () => {
     expect(run?.helpInformation()).not.toContain("--detach");
   });
 
+  it("offers an explicit fresh-agent escape hatch for managed callers", () => {
+    const run = createCli().commands.find((command) => command.name() === "run");
+    expect(run?.helpInformation()).toContain("--fresh");
+  });
+
   it("offers thinking configuration when running, updating, and scheduling agents", () => {
     const cli = createCli();
     const run = cli.commands.find((command) => command.name() === "run");

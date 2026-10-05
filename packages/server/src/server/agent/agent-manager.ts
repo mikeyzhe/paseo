@@ -85,6 +85,11 @@ import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
 import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
 import {
+  compareReusableAgents,
+  isCompatibleReusableAgent,
+  type ReusableAgentCriteria,
+} from "./reusable-agent.js";
+import {
   ProviderSubagentStore,
   type ProviderSubagentDescriptor,
   type ProviderSubagentStoreEvent,
@@ -737,6 +742,7 @@ export class AgentManager {
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
+  private readonly reusableAgentClaims = new Set<string>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
   private readonly mcpAuthToken: string | null;
@@ -988,6 +994,32 @@ export class AgentManager {
     return Array.from(this.agents.values())
       .filter((agent) => !agent.internal)
       .map((agent) => Object.assign({}, agent));
+  }
+
+  async claimReusableAgent(criteria: ReusableAgentCriteria): Promise<ManagedAgent | null> {
+    const normalizedCriteria = {
+      ...criteria,
+      config: await this.normalizeConfig(stripInternalPaseoMcpServer(criteria.config), {
+        resolveDefaultModel: false,
+      }),
+    };
+    const candidate = Array.from(this.agents.values())
+      .filter(
+        (agent) =>
+          !this.reusableAgentClaims.has(agent.id) &&
+          !this.hasInFlightRun(agent.id) &&
+          isCompatibleReusableAgent(agent, normalizedCriteria),
+      )
+      .sort(compareReusableAgents)[0];
+    if (!candidate) {
+      return null;
+    }
+    this.reusableAgentClaims.add(candidate.id);
+    return { ...candidate };
+  }
+
+  releaseReusableAgentClaim(agentId: string): void {
+    this.reusableAgentClaims.delete(agentId);
   }
 
   async listImportableSessions(
@@ -2473,6 +2505,9 @@ export class AgentManager {
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
   ): AsyncGenerator<AgentStreamEvent> {
+    if (this.reusableAgentClaims.has(agentId)) {
+      throw new Error(`Agent ${agentId} is reserved for a delegated task`);
+    }
     const existingAgent = this.requireSessionAgent(agentId);
     this.logger.trace(
       {
@@ -2601,6 +2636,17 @@ export class AgentManager {
     }.call(this);
 
     return streamForwarder;
+  }
+
+  streamClaimedReusableAgent(
+    agentId: string,
+    prompt: AgentPromptInput,
+    options?: AgentRunOptions,
+  ): AsyncGenerator<AgentStreamEvent> {
+    if (!this.reusableAgentClaims.delete(agentId)) {
+      throw new Error(`Agent ${agentId} does not have an active reuse claim`);
+    }
+    return this.streamAgent(agentId, prompt, options);
   }
 
   private finalizeForegroundTurn(agent: ActiveManagedAgent, turnId?: string): void {

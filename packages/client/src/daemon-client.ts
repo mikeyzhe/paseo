@@ -450,6 +450,7 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   env?: CreateAgentRequestMessage["env"];
   workspaceId?: string;
   callerAgentId?: string;
+  reusePolicy?: CreateAgentRequestMessage["reusePolicy"];
   initialPrompt?: string;
   idempotencyKey?: string;
   clientMessageId?: string;
@@ -2874,6 +2875,7 @@ export class DaemonClient {
       ...(options.env ? { env: options.env } : {}),
       ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
       ...(options.callerAgentId !== undefined ? { callerAgentId: options.callerAgentId } : {}),
+      ...(options.reusePolicy !== undefined ? { reusePolicy: options.reusePolicy } : {}),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
       idempotencyKey: options.idempotencyKey,
       ...(options.clientMessageId ? { clientMessageId: options.clientMessageId } : {}),
