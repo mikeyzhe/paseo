@@ -14,9 +14,10 @@ describe("Paseo tool-call detail presentation", () => {
             provider: "codex/gpt-5.4",
             title: "Greeter",
             initialPrompt: "Say hello back.\nDo nothing else.",
+            reusePolicy: "compatible",
             notifyOnFinish: true,
           },
-          { agentId: "agt_123", status: "idle" },
+          { agentId: "agt_123", disposition: "reused", status: "idle" },
         ),
       ).toEqual([
         {
@@ -31,6 +32,7 @@ describe("Paseo tool-call detail presentation", () => {
             { label: "Title", value: "Greeter" },
             { label: "Provider", value: "codex/gpt-5.4" },
             { label: "Workspace", value: "wks_123" },
+            { label: "Reuse policy", value: "compatible" },
             { label: "Notify on finish", value: "Yes" },
           ],
         },
@@ -39,6 +41,7 @@ describe("Paseo tool-call detail presentation", () => {
           title: "Result",
           fields: [
             { label: "Agent", value: "agt_123" },
+            { label: "Disposition", value: "reused" },
             { label: "Status", value: "idle" },
           ],
         },

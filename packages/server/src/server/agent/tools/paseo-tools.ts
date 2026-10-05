@@ -1037,6 +1037,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   };
   const agentToAgentInputSchema = {
     ...canonicalCreateAgentFields,
+    reusePolicy: z
+      .enum(["compatible", "fresh"])
+      .optional()
+      .default("compatible")
+      .describe(
+        "Reuse a compatible idle direct child when possible (default), or force a fresh agent for parallel independent work.",
+      ),
     notifyOnFinish: z
       .boolean()
       .optional()
@@ -1065,6 +1072,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const legacyAgentToAgentInputSchema = {
     ...commonCreateAgentFields,
     ...legacyCreateAgentPlacementFields,
+    reusePolicy: agentToAgentInputSchema.reusePolicy,
     notifyOnFinish: agentToAgentInputSchema.notifyOnFinish,
   };
   const legacyTopLevelCreateAgentInputSchema = {
@@ -1432,7 +1440,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Create agent",
       description:
-        "Create an agent. Agent-scoped creation defaults to your workspace and creates your subagent. Top-level creation without workspaceId creates a new local workspace. Requires provider/model (for example codex/gpt-5.4) and an initial prompt. Do not guess; call list_providers and list_models first if uncertain.",
+        "Delegate a task. Agent-scoped calls atomically reuse a compatible idle direct child or create one in your workspace; set reusePolicy to fresh for parallel independent work. Top-level creation without workspaceId creates a new local workspace. Requires provider/model (for example codex/gpt-5.4) and an initial prompt. Do not guess; call list_providers and list_models first if uncertain.",
       inputSchema: createAgentInputSchema,
       outputSchema: {
         agentId: z.string(),
@@ -1445,6 +1453,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         lastMessage: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
         guidance: z.string().optional(),
+        disposition: z.enum(["created", "reused"]),
       },
     },
     async (args: unknown) => {
@@ -1465,6 +1474,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         snapshot,
         background: createdInBackground,
         initialPromptStarted,
+        disposition,
       } = await createAgentCommand(
         {
           agentManager,
@@ -1495,6 +1505,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           notifyOnFinish,
           detached: resolvedArgs.detached,
           callerAgentId,
+          reusePolicy:
+            resolvedArgs.kind === "agent-scoped" ? resolvedArgs.parsedArgs.reusePolicy : undefined,
           callerContext,
           worktree,
         },
@@ -1517,6 +1529,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             availableModes: liveSnapshot.availableModes,
             lastMessage: result.lastMessage,
             permission: sanitizePermissionRequest(result.permission),
+            disposition,
           };
           const validJson = ensureValidJson(responseData);
 
@@ -1535,7 +1548,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
       const guidance =
         callerAgentId && notifyOnFinish && initialPromptStarted
-          ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
+          ? `You will get notified when the ${disposition} agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.`
           : undefined;
       const response = {
         content: [],
@@ -1549,6 +1562,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           availableModes: currentSnapshot.availableModes,
           lastMessage: null,
           permission: null,
+          disposition,
           ...(guidance ? { guidance } : {}),
         }),
       };

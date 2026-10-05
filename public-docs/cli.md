@@ -43,6 +43,7 @@ Use `paseo run` to start a new agent with a task:
 paseo run "implement user authentication"
 paseo run --provider codex "refactor the API layer"
 paseo run --background "run the focused test suite"
+paseo run --fresh "run in a separate agent conversation"
 paseo run --new-workspace worktree --worktree-mode branch-off --new-branch feature/x --base origin/main "implement feature X"
 paseo run --workspace <workspace-id> "review the current diff"
 paseo run --output-schema schema.json "extract release notes"
@@ -53,7 +54,7 @@ From a human shell, a bare `paseo run` creates a new local workspace for the cur
 
 Worktree creation accepts `--worktree-mode branch-off|checkout-branch|checkout-pr` plus the matching `--new-branch`/`--base`, `--branch`, or `--pr-number`/`--forge` options. Use `--worktree-slug` to choose the managed directory slug.
 
-When an existing Paseo agent runs the same command, Paseo recognizes it through `PASEO_AGENT_ID`. Without explicit placement, the new agent becomes its subagent in the same workspace. `--workspace` can place that subagent elsewhere without changing its parent.
+When an existing Paseo agent runs the same command, Paseo recognizes it through `PASEO_AGENT_ID`. Without explicit placement, Paseo atomically reuses a compatible idle direct child in the same workspace or creates one when none is available. `--workspace` can place that subagent elsewhere without changing its parent. Use `--fresh` when parallel or independent work requires a separate conversation.
 
 Use `--output-schema` to return only matching JSON output. You can pass a schema file path or an inline JSON schema object. This mode cannot be used with `--background`.
 

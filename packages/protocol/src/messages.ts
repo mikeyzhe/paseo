@@ -1701,6 +1701,7 @@ export const CreateAgentRequestMessageSchema = z.object({
   // Optional caller context lets managed CLI invocations use the same daemon-owned
   // workspace and parentage policy as agent-scoped MCP creation.
   callerAgentId: z.string().optional(),
+  reusePolicy: z.enum(["compatible", "fresh"]).optional(),
   worktreeName: z.string().optional(),
   initialPrompt: z.string().optional(),
   clientMessageId: z.string().optional(),
@@ -3768,6 +3769,7 @@ export const AgentCreatedStatusPayloadSchema = z
   .object({
     status: z.literal("agent_created"),
     agent: AgentSnapshotPayloadSchema,
+    disposition: z.enum(["created", "reused"]).optional(),
   })
   .extend(AgentStatusWithRequestSchema.shape);
 
