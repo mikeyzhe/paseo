@@ -235,6 +235,7 @@ import {
   type CreateAgentCommandDependencies,
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
+import type { ArchiveAgentResult } from "./agent/lifecycle-command.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -1143,6 +1144,13 @@ export async function createPaseoDaemon(
       ),
     );
   };
+  const notifyAgentArchivedExternal = async (archived: ArchiveAgentResult) => {
+    await Promise.all(
+      (wsServer?.listSessions() ?? []).map((session) =>
+        session.emitAgentArchiveForExternalMutation(archived),
+      ),
+    );
+  };
   const ensureWorkspaceForCreateAndBroadcastExternal = async (
     cwd: string,
     firstAgentContext?: FirstAgentContext,
@@ -1294,8 +1302,11 @@ export async function createPaseoDaemon(
     github,
     workspaceGitService,
     createPaseoWorktreeWorkflow: createPaseoWorktreeForTools,
-    archiveAgentForClose: (agentId) =>
-      archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
+    archiveAgentForClose: async (agentId) => {
+      const archived = await archiveAgentCommand({ agentManager, agentStorage, logger }, agentId);
+      await notifyAgentArchivedExternal(archived);
+      return archived;
+    },
     findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
     listActiveWorkspaces: listActiveWorkspacesExternal,
     archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
@@ -1516,6 +1527,7 @@ export async function createPaseoDaemon(
     listActiveWorkspaces: listActiveWorkspacesExternal,
     archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
+    notifyAgentArchived: notifyAgentArchivedExternal,
     workspaceRegistry,
     projectRegistry,
     createDirectoryWorkspace: async (cwd, title, projectId, context) => {
