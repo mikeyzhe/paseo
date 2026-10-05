@@ -166,6 +166,21 @@ export function appendDelta(
   return { ...previous, summary };
 }
 
+// HOTFIX (2026-10-05, fleet-local): readOutput notFound must not fail the turn — display-only fetch. Remove when Paseo ships a fix.
+// Muse reports a vanished edit patch via item/readOutput error kinds "notFound"
+// / "outputUnavailable" (msp.d.ts); connection.ts surfaces them as MuseError
+// kinds via error.data.kind. The message fallback covers servers that omit data.
+function isMissingPatchOutput(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error instanceof MuseError)
+    return (
+      error.kind === "notFound" ||
+      error.kind === "outputUnavailable" ||
+      /output ref was not found|output is unavailable/i.test(error.message)
+    );
+  return /output ref was not found|output is unavailable/i.test(error.message);
+}
+
 export class Timeline {
   private readonly items = new Map<string, WireItem>();
   constructor(
@@ -182,14 +197,23 @@ export class Timeline {
     if (previous && previous.revision >= item.revision) return false;
     let patch;
     if (item.patchRef && item.status === "completed") {
-      const output = await this.host.request(
-        "item/readOutput",
-        { sessionId: this.nativeId, itemId: item.itemId, outputRef: item.patchRef.id },
-        outputSchema,
-      );
-      if (output.encoding !== "utf8" || !output.eof)
-        throw new MuseError("invalidPatch", "Muse edit patch is not a complete UTF-8 document");
-      patch = unifiedDiff(output.content);
+      try {
+        const output = await this.host.request(
+          "item/readOutput",
+          { sessionId: this.nativeId, itemId: item.itemId, outputRef: item.patchRef.id },
+          outputSchema,
+        );
+        if (output.encoding !== "utf8" || !output.eof)
+          throw new MuseError("invalidPatch", "Muse edit patch is not a complete UTF-8 document");
+        patch = unifiedDiff(output.content);
+      } catch (error) {
+        // HOTFIX (2026-10-05, fleet-local): readOutput notFound must not fail the turn — display-only fetch. Remove when Paseo ships a fix.
+        if (!isMissingPatchOutput(error)) throw error;
+        const message = (error instanceof Error ? error.message : String(error)).slice(0, 120);
+        process.stderr.write(
+          `[muse-provider HOTFIX readOutput] item ${item.itemId}: ${message} — rendered without diff\n`,
+        );
+      }
     }
     this.items.set(item.itemId, item);
     this.emit({
