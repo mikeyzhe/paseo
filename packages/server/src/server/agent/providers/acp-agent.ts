@@ -114,6 +114,7 @@ import {
   type ProviderRuntimeSettings,
 } from "../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
+import { composeSystemPromptParts } from "../system-prompt.js";
 import { appendOrReplaceGrowingAssistantMessage, runProviderTurn } from "./provider-runner.js";
 import {
   buildStringCommandShellInvocation,
@@ -1692,6 +1693,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private pendingUserMessage: PendingUserMessage | null = null;
   private submittedUserMessageTurnId: string | null = null;
+  private systemPromptPrepended = false;
   private readonly toolCalls = new Map<string, ACPToolSnapshot>();
   private readonly terminalEntries = new Map<string, TerminalEntry>();
   private readonly persistedHistory: AgentTimelineItem[] = [];
@@ -1871,6 +1873,31 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     return result;
   }
 
+  /**
+   * ACP `session/prompt` carries no system-prompt channel, so the daemon's own prompt parts
+   * ride in-band on the session's first user turn (hometool carries its fleet overlay the same
+   * way for prompt-blind ACP providers). A resumed native session already holds its system
+   * context, and later turns need no repeat.
+   */
+  private withSystemPrompt(prompt: AgentPromptInput): AgentPromptInput {
+    if (this.systemPromptPrepended || this.initialHandle) {
+      return prompt;
+    }
+    const system = composeSystemPromptParts(
+      this.config.systemPrompt,
+      this.config.daemonAppendSystemPrompt,
+    );
+    if (!system) {
+      return prompt;
+    }
+    this.systemPromptPrepended = true;
+    const lead = `${system}\n\n---`;
+    if (typeof prompt === "string") {
+      return prompt.trim() === "" ? system : `${lead}\n\n${prompt}`;
+    }
+    return [{ type: "text", text: lead }, ...prompt];
+  }
+
   async startTurn(
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
@@ -1893,13 +1920,14 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.submittedUserMessageTurnId = null;
     this.emitBootstrapThreadEvent();
     this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
-    this.emitSubmittedUserMessage(prompt, messageId, turnId, options?.clientMessageId);
+    const outgoing = this.withSystemPrompt(prompt);
+    this.emitSubmittedUserMessage(outgoing, messageId, turnId, options?.clientMessageId);
 
     void this.connection
       .prompt({
         sessionId: this.sessionId,
         messageId,
-        prompt: toACPContentBlocks(prompt),
+        prompt: toACPContentBlocks(outgoing),
       })
       .then((response) => {
         this.handlePromptResponse(response, turnId);

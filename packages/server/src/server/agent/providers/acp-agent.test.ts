@@ -194,6 +194,9 @@ function createSessionWithConfig(
     modeId?: string | null;
     model?: string | null;
     featureValues?: Record<string, unknown>;
+    systemPrompt?: string;
+    daemonAppendSystemPrompt?: string;
+    handle?: AgentPersistenceHandle;
   } = {},
   logger: ReturnType<typeof createTestLogger> = createTestLogger(),
 ): ACPAgentSession {
@@ -204,9 +207,12 @@ function createSessionWithConfig(
       modeId: config.modeId ?? undefined,
       model: config.model ?? undefined,
       featureValues: config.featureValues,
+      systemPrompt: config.systemPrompt,
+      daemonAppendSystemPrompt: config.daemonAppendSystemPrompt,
     },
     {
       provider: config.provider ?? "claude-acp",
+      handle: config.handle,
       logger,
       defaultCommand: ["claude", "--acp"],
       defaultModes: [],
@@ -3011,6 +3017,67 @@ describe("ACPAgentSession", () => {
     ]);
 
     resolvePrompt({ stopReason: "end_turn" });
+  });
+
+  test("startTurn prepends the daemon system prompt in-band on the first turn", async () => {
+    const session = createSessionWithConfig({
+      systemPrompt: "Be terse.",
+      daemonAppendSystemPrompt: "Use metric units.",
+    });
+    const prompt = vi.fn(() => new Promise<PromptResponse>(() => {}));
+
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    asInternals<ACPSessionInternals>(session).connection = { prompt };
+
+    await session.startTurn("hello", { clientMessageId: "msg-client-1" });
+
+    expect(prompt).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      messageId: "msg-client-1",
+      prompt: [{ type: "text", text: "Be terse.\n\nUse metric units.\n\n---\n\nhello" }],
+    });
+  });
+
+  test("startTurn prepends the system prompt only once", async () => {
+    const session = createSessionWithConfig({ systemPrompt: "Be terse." });
+    const prompt = vi.fn(() => new Promise<PromptResponse>(() => {}));
+
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    asInternals<ACPSessionInternals>(session).connection = { prompt };
+
+    await session.startTurn("first", { clientMessageId: "msg-1" });
+    asInternals<ACPSessionInternals>(session).activeForegroundTurnId = null;
+    await session.startTurn("second", { clientMessageId: "msg-2" });
+
+    expect(prompt).toHaveBeenNthCalledWith(1, {
+      sessionId: "session-1",
+      messageId: "msg-1",
+      prompt: [{ type: "text", text: "Be terse.\n\n---\n\nfirst" }],
+    });
+    expect(prompt).toHaveBeenNthCalledWith(2, {
+      sessionId: "session-1",
+      messageId: "msg-2",
+      prompt: [{ type: "text", text: "second" }],
+    });
+  });
+
+  test("startTurn skips the system prompt preamble on a resumed session", async () => {
+    const session = createSessionWithConfig({
+      systemPrompt: "Be terse.",
+      handle: { provider: "claude-acp", sessionId: "session-1" },
+    });
+    const prompt = vi.fn(() => new Promise<PromptResponse>(() => {}));
+
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    asInternals<ACPSessionInternals>(session).connection = { prompt };
+
+    await session.startTurn("hello", { clientMessageId: "msg-client-1" });
+
+    expect(prompt).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      messageId: "msg-client-1",
+      prompt: [{ type: "text", text: "hello" }],
+    });
   });
 
   test("startTurn dedupes ACP user echo chunks for the submitted message", async () => {
