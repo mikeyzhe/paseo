@@ -443,8 +443,7 @@ test("uploaded_file attachment without a path fails with a diagnostic instead of
   });
   expect(
     await h.wait(
-      (event) =>
-        event.type === "session.prompt_result" && event.result.type === "failed",
+      (event) => event.type === "session.prompt_result" && event.result.type === "failed",
       from,
     ),
   ).toMatchObject({
