@@ -129,15 +129,19 @@ function controlResponse(frame) {
     rpcError(frame, -32020, "sessionNotFound", "missing");
     return true;
   }
-  if (process.env.MUSE_TEST_RUNTIME_FAULT === frame.method && !sawSessionResume()) {
-    rpcError(
-      frame,
-      -32001,
-      "internal",
-      process.env.MUSE_TEST_RUNTIME_FAULT_MESSAGE ||
-        "event log failed: Origin read requires valid checkpoint-suffix",
-    );
-    return true;
+  if (process.env.MUSE_TEST_RUNTIME_FAULT === frame.method) {
+    const always = process.env.MUSE_TEST_RUNTIME_FAULT_ALWAYS === "1";
+    const skip = Number(process.env.MUSE_TEST_RUNTIME_FAULT_SKIP || "0");
+    if ((always || !sawSessionResume()) && turnStartCount() !== skip) {
+      rpcError(
+        frame,
+        -32001,
+        "internal",
+        process.env.MUSE_TEST_RUNTIME_FAULT_MESSAGE ||
+          "event log failed: Origin read requires valid checkpoint-suffix",
+      );
+      return true;
+    }
   }
   if (frame.method === "session/resume" && process.env.MUSE_TEST_RUNTIME_FAULT) {
     // Recovery resume on scenarios whose fixture has no session/resume rows.
@@ -187,6 +191,17 @@ function sawSessionResume() {
     );
   } catch {
     return false;
+  }
+}
+// Count includes the frame currently being handled (already appended).
+function turnStartCount() {
+  if (!process.env.MUSE_TEST_REQUESTS) return 0;
+  try {
+    return readFileSync(process.env.MUSE_TEST_REQUESTS, "utf8")
+      .split("\n")
+      .filter((line) => line.includes('"method":"turn/start"')).length;
+  } catch {
+    return 0;
   }
 }
 function parityResponse(frame) {
@@ -449,7 +464,10 @@ function applyTestVariants(message) {
   }
   if (message.method === "turn/completed" && process.env.MUSE_TEST_TERMINAL_FAULT) {
     message.params.terminal = "failed";
-    message.params.error = { kind: "internal", message: process.env.MUSE_TEST_TERMINAL_FAULT };
+    message.params.error = {
+      kind: process.env.MUSE_TEST_TERMINAL_FAULT_KIND || "internal",
+      message: process.env.MUSE_TEST_TERMINAL_FAULT,
+    };
   }
   if (message.result?.schema && process.env.MUSE_TEST_FINGERPRINT)
     message.result.schema.fingerprint = process.env.MUSE_TEST_FINGERPRINT;

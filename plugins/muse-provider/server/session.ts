@@ -109,10 +109,13 @@ export class Session {
   private spawnHost(): MspConnection {
     const host = new MspConnection(this.hostOptions);
     host.onNotification((notification) => {
+      // Drop late notifications from a host that has since been replaced.
+      if (this.host !== host) return;
       if (this.opening) this.buffered.push(notification);
       else this.enqueue(notification);
     });
     host.onExit((error) => {
+      if (this.host !== host) return;
       if (!this.opening && !this.closing) this.runtimeFailed(error);
     });
     return host;
@@ -260,11 +263,12 @@ export class Session {
   // open() does. Returns false (caller surfaces the original error unchanged)
   // when closing, when the 5-minute loop guard trips, or when the swap itself
   // fails. Remove when Paseo ships a fix.
-  private async recoverRuntimeFault(faultMessage: string, willResubmit: boolean): Promise<boolean> {
+  private async recoverRuntimeFault(faultError: unknown, willResubmit: boolean): Promise<boolean> {
     if (this.closing || !this.liveState) return false;
     const now = Date.now();
     if (now - this.lastFaultRecoveryAt < Session.FAULT_RECOVERY_COOLDOWN_MS) return false;
     this.lastFaultRecoveryAt = now;
+    const faultMessage = faultError instanceof Error ? faultError.message : String(faultError);
     const live = this.live();
     const sessionId = live.nativeId;
     this.opening = true;
@@ -288,12 +292,21 @@ export class Session {
           "Muse returned an empty resume viewCursor; this session cannot be watched.",
         );
       this.adoptSession(response);
-      await this.restorePending(response.pendingRequests);
+      // Post-adopt steps are best-effort: the session already recovered, so a
+      // failure here must not report the recovery itself as failed.
+      const benign = (step: string) => (error: unknown) => {
+        process.stderr.write(
+          `[muse-provider HOTFIX #79] post-recovery ${step} failed (session ${sessionId} already resumed): ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      };
+      await this.restorePending(response.pendingRequests).catch(benign("restorePending"));
       this.opening = false;
       for (const notification of this.buffered) this.enqueue(notification);
       this.buffered.length = 0;
       await this.notifications;
-      await this.live().commands.refresh();
+      await this.live().commands.refresh().catch(benign("commands.refresh"));
       this.publishPersistence();
       process.stderr.write(
         `[muse-provider HOTFIX #79] runtime fault "${faultMessage.slice(0, 120)}" → fresh muse serve, session ${sessionId} resumed (resubmit=${willResubmit ? "yes" : "no"})\n`,
@@ -307,7 +320,10 @@ export class Session {
           error instanceof Error ? error.message : String(error)
         }\n`,
       );
-      if (!this.closing) this.runtimeFailed(new MuseError("internal", faultMessage));
+      // Single surfacing with the original error (kind preserved): the prompt
+      // path rethrows it itself, so only the detached terminal path — which
+      // has no caller to surface — marks the session failed here.
+      if (!willResubmit && !this.closing) this.runtimeFailed(faultError);
       return false;
     }
   }
@@ -386,7 +402,7 @@ export class Session {
       if (
         !isMuseRuntimeFault(message) ||
         this.resubmittedMessageIds.has(prompt.clientMessageId) ||
-        !(await this.recoverRuntimeFault(message, true))
+        !(await this.recoverRuntimeFault(error, true))
       )
         throw error;
       this.resubmittedMessageIds.add(prompt.clientMessageId);
@@ -661,8 +677,12 @@ export class Session {
     // after resume, so the prompt is NOT resubmitted (that would duplicate
     // it); the failed turn above already surfaced to Paseo unchanged. Remove
     // when Paseo ships a fix.
-    if (state === "failed" && params.error && isMuseRuntimeFault(params.error.message))
-      void this.recoverRuntimeFault(params.error.message, false).catch(() => {});
+    if (state === "failed" && params.error && isMuseRuntimeFault(params.error.message)) {
+      // Deliberately not awaited: recovery drains this.notifications, and this
+      // runs inside the notification chain — awaiting here would deadlock.
+      const faultError = new MuseError(params.error.kind, params.error.message);
+      void this.recoverRuntimeFault(faultError, false).catch(() => {});
+    }
   }
 
   private async fold(item: WireItem): Promise<void> {
