@@ -380,6 +380,79 @@ test("image turn sends a native image and the subsequent text turn succeeds", as
   });
   expect(turns[1].params.input).toEqual([{ type: "text", text: "hello" }]);
 });
+test("uploaded_file attachment passes a path reference as text instead of failing the turn", async () => {
+  const h = await harness("image-followup");
+  await h.open();
+  const from = await h.send({
+    type: "session.prompt",
+    sessionId: "paseo-session",
+    prompt: {
+      clientMessageId: "client-upload",
+      delivery: "auto",
+      input: {
+        type: "message",
+        content: [
+          { type: "text", text: "please read this" },
+          {
+            type: "uploaded_file",
+            id: "upload-1",
+            fileName: "notes.txt",
+            mimeType: "text/plain",
+            size: 42,
+            path: "/tmp/uploads/notes.txt",
+          },
+        ],
+      },
+    },
+  });
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed", from);
+  const turns = (await h.recorded()).filter((frame) => frame.method === "turn/start");
+  const reference = [
+    "Uploaded file: notes.txt",
+    "Path: /tmp/uploads/notes.txt",
+    "MIME: text/plain",
+    "Size: 42 bytes",
+  ].join("\n");
+  expect(turns[0].params.input).toContainEqual({ type: "text", text: reference });
+  expect(turns[0].params.displayText).toBe(`please read this\n${reference}`);
+});
+test("uploaded_file attachment without a path fails with a diagnostic instead of writing a file", async () => {
+  const h = await harness("image-followup");
+  await h.open();
+  const from = await h.send({
+    type: "session.prompt",
+    sessionId: "paseo-session",
+    prompt: {
+      clientMessageId: "client-upload-nopath",
+      delivery: "auto",
+      input: {
+        type: "message",
+        content: [
+          { type: "text", text: "hello" },
+          {
+            type: "uploaded_file",
+            id: "upload-2",
+            fileName: "ghost.bin",
+            mimeType: "application/octet-stream",
+            size: 7,
+            path: "",
+          },
+        ],
+      },
+    },
+  });
+  expect(
+    await h.wait(
+      (event) =>
+        event.type === "session.prompt_result" && event.result.type === "failed",
+      from,
+    ),
+  ).toMatchObject({
+    clientMessageId: "client-upload-nopath",
+    result: { type: "failed", error: { message: expect.stringContaining("ghost.bin") } },
+  });
+  expect((await h.recorded()).filter((frame) => frame.method === "turn/start")).toEqual([]);
+});
 for (const source of ["live", "history", "backfill"]) {
   test(`reminder housekeeping emits no timeline items or child sessions from ${source}`, async () => {
     const scenario = source === "history" ? "resume-without-cursor" : "text-reasoning";
