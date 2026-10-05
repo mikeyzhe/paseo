@@ -1371,6 +1371,86 @@ test("runtime fault on a run terminal replaces the host without resubmitting", a
   expect(requests.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
 });
 
+test("fault on every process recovers exactly once, then surfaces the original error", async () => {
+  const h = await harness("text-reasoning", {
+    MUSE_TEST_RUNTIME_FAULT: "turn/start",
+    MUSE_TEST_RUNTIME_FAULT_ALWAYS: "1",
+  });
+  await h.open();
+  await h.prompt();
+  const failed = await h.wait(
+    (event) => event.type === "session.prompt_result" && event.result.type === "failed",
+  );
+  expect(failed).toMatchObject({
+    result: {
+      error: expect.objectContaining({ message: expect.stringContaining("event log failed") }),
+    },
+  });
+  // Single surfacing: the prompt path rethrows, it must not also runtime-fail.
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  const requests = await h.recorded();
+  expect(requests.filter((frame) => frame.method === "session/resume")).toHaveLength(1);
+  expect(requests.filter((frame) => frame.method === "turn/start")).toHaveLength(2);
+});
+
+test("a second fault inside the cooldown window gets no second recovery", async () => {
+  const h = await harness("text-reasoning", {
+    MUSE_TEST_RUNTIME_FAULT: "turn/start",
+    MUSE_TEST_RUNTIME_FAULT_ALWAYS: "1",
+    MUSE_TEST_RUNTIME_FAULT_SKIP: "2",
+  });
+  await h.open();
+  await h.prompt();
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  await h.prompt();
+  const failed = await h.wait(
+    (event) => event.type === "session.prompt_result" && event.result.type === "failed",
+  );
+  expect(failed).toMatchObject({
+    result: {
+      error: expect.objectContaining({ message: expect.stringContaining("event log failed") }),
+    },
+  });
+  const requests = await h.recorded();
+  expect(requests.filter((frame) => frame.method === "session/resume")).toHaveLength(1);
+  expect(requests.filter((frame) => frame.method === "turn/start")).toHaveLength(3);
+});
+
+test("failed prompt-path recovery surfaces only the original error", async () => {
+  const h = await harness("text-reasoning", {
+    MUSE_TEST_RUNTIME_FAULT: "turn/start",
+    MUSE_TEST_GONE: "1",
+  });
+  await h.open();
+  await h.prompt();
+  const failed = await h.wait(
+    (event) => event.type === "session.prompt_result" && event.result.type === "failed",
+  );
+  expect(failed).toMatchObject({
+    result: {
+      error: expect.objectContaining({ message: expect.stringContaining("event log failed") }),
+    },
+  });
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  const requests = await h.recorded();
+  expect(requests.filter((frame) => frame.method === "session/resume")).toHaveLength(1);
+  expect(requests.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
+});
+
+test("failed terminal-path recovery marks the session with the original kind", async () => {
+  const h = await harness("text-reasoning", {
+    MUSE_TEST_TERMINAL_FAULT: "event log failed: wedged",
+    MUSE_TEST_TERMINAL_FAULT_KIND: "logError",
+    MUSE_TEST_GONE: "1",
+  });
+  await h.open();
+  await h.prompt();
+  await h.wait((event) => event.type === "session.turn" && event.state === "failed");
+  expect(await h.wait((event) => event.type === "session.runtime_failed")).toMatchObject({
+    error: { code: "logError", message: expect.stringContaining("event log failed") },
+  });
+});
+
 for (const fault of ["notFound", "outputUnavailable", "nodata"]) {
   test(`readOutput ${fault} renders the edit without a diff and completes the turn`, async () => {
     const h = await harness("tools-edit", { MUSE_TEST_READOUTPUT_FAULT: fault });
