@@ -357,45 +357,7 @@ export class Session {
     if (await this.live().commands.compact(prompt)) return;
     const id = commandId();
     this.messages.set(id, prompt.clientMessageId);
-    const input: TurnStartParams["input"] = [];
-    const text: string[] = [];
-    if (this.firstTurn && this.config.systemPrompt)
-      input.push({
-        type: "text",
-        text: `<system_instructions>\n${this.config.systemPrompt}\n</system_instructions>`,
-      });
-    if (prompt.input.type === "command") {
-      input.push(this.live().commands.input(prompt.input));
-      text.push(
-        `/${prompt.input.name}${prompt.input.arguments ? ` ${prompt.input.arguments}` : ""}`,
-      );
-    } else
-      for (const part of prompt.input.content) {
-        if (part.type === "text") {
-          input.push({ type: "text", text: part.text });
-          text.push(part.text);
-        } else if (part.type === "image")
-          input.push({ type: "image", base64Data: part.data, mediaType: part.mimeType });
-        else if (part.type === "uploaded_file") {
-          // Muse has no file part: pass the same reference text every builtin
-          // provider renders for uploaded_file
-          // (packages/server/src/server/agent/prompt-attachments.ts) so the
-          // agent can read the file at its path. Nothing is written to disk.
-          if (!part.path)
-            throw new MuseError(
-              "unsupported",
-              `Muse cannot attach uploaded file "${part.fileName}": it has no path on disk`,
-            );
-          const reference = [
-            `Uploaded file: ${part.fileName}`,
-            `Path: ${part.path}`,
-            `MIME: ${part.mimeType}`,
-            `Size: ${part.size} bytes`,
-          ].join("\n");
-          input.push({ type: "text", text: reference });
-          text.push(reference);
-        } else throw new MuseError("unsupported", `Muse does not support ${part.type} attachments`);
-      }
+    const { input, text } = this.turnInput(prompt);
     const params: TurnStartParams = {
       commandId: id,
       sessionId: this.live().nativeId,
@@ -424,7 +386,22 @@ export class Session {
       )
         throw error;
       this.resubmittedMessageIds.add(prompt.clientMessageId);
-      response = await this.host.command("turn/start", params, promptResultSchema);
+      // Resubmit with a FRESH commandId: real Muse serves a value-identical
+      // same-commandId turn/start as a replay of its recorded result (verified
+      // against `muse serve` 1.4.2 in an isolated sandbox: the recorded result
+      // returns with no new view events), so a command whose intake landed
+      // before an MCP-audit fault would re-serve that fault instead of
+      // retrying. Event-log faults never recorded intake (the append itself
+      // failed), so a fresh id retries there too. The fresh id maps to the
+      // original clientMessageId so turn notifications and user-echo identity
+      // stay correct.
+      const resubmitId = commandId();
+      this.messages.set(resubmitId, prompt.clientMessageId);
+      response = await this.host.command(
+        "turn/start",
+        { ...params, commandId: resubmitId },
+        promptResultSchema,
+      );
     }
     this.firstTurn = false;
     if (response.disposition === "started" && this.turns.get(response.turnId) !== "completed")
@@ -437,6 +414,52 @@ export class Session {
       clientMessageId: prompt.clientMessageId,
       result: { type, turnId: response.turnId },
     });
+  }
+  private turnInput(prompt: ProviderPrompt): {
+    input: TurnStartParams["input"];
+    text: string[];
+  } {
+    const input: TurnStartParams["input"] = [];
+    const text: string[] = [];
+    if (this.firstTurn && this.config.systemPrompt)
+      input.push({
+        type: "text",
+        text: `<system_instructions>\n${this.config.systemPrompt}\n</system_instructions>`,
+      });
+    if (prompt.input.type === "command") {
+      input.push(this.live().commands.input(prompt.input));
+      text.push(
+        `/${prompt.input.name}${prompt.input.arguments ? ` ${prompt.input.arguments}` : ""}`,
+      );
+      return { input, text };
+    }
+    for (const part of prompt.input.content) {
+      if (part.type === "text") {
+        input.push({ type: "text", text: part.text });
+        text.push(part.text);
+      } else if (part.type === "image")
+        input.push({ type: "image", base64Data: part.data, mediaType: part.mimeType });
+      else if (part.type === "uploaded_file") {
+        // Muse has no file part: pass the same reference text every builtin
+        // provider renders for uploaded_file
+        // (packages/server/src/server/agent/prompt-attachments.ts) so the
+        // agent can read the file at its path. Nothing is written to disk.
+        if (!part.path)
+          throw new MuseError(
+            "unsupported",
+            `Muse cannot attach uploaded file "${part.fileName}": it has no path on disk`,
+          );
+        const reference = [
+          `Uploaded file: ${part.fileName}`,
+          `Path: ${part.path}`,
+          `MIME: ${part.mimeType}`,
+          `Size: ${part.size} bytes`,
+        ].join("\n");
+        input.push({ type: "text", text: reference });
+        text.push(reference);
+      } else throw new MuseError("unsupported", `Muse does not support ${part.type} attachments`);
+    }
+    return { input, text };
   }
   async configure(changes: ProviderConfigChanges): Promise<void> {
     if (changes.model !== undefined) {
