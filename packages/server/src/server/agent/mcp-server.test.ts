@@ -6376,3 +6376,55 @@ describe("agent snapshot MCP serialization", () => {
     expect(content).not.toContain("first answer");
   });
 });
+
+describe("archive_agent broadcast", () => {
+  it("notifies the host after archiving so subscribers learn about MCP-tool archives", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const stored = createStoredRecord({ id: "archive-me", archivedAt: null });
+    const archivedAt = "2026-10-05T00:00:00.000Z";
+    spies.agentStorage.get.mockResolvedValue(stored);
+    const archiveSnapshot = vi.fn().mockResolvedValue({ ...stored, archivedAt });
+    (agentManager as unknown as Record<string, unknown>).archiveSnapshot = archiveSnapshot;
+    const notifyAgentArchived = vi.fn().mockResolvedValue(undefined);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createClaudeOnlyManager(),
+      notifyAgentArchived,
+      logger: createTestLogger(),
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "archive_agent"), {
+      agentId: "archive-me",
+    });
+
+    expect(response.structuredContent).toEqual({ success: true });
+    expect(archiveSnapshot).toHaveBeenCalledWith("archive-me", expect.any(String));
+    expect(notifyAgentArchived).toHaveBeenCalledTimes(1);
+    expect(notifyAgentArchived).toHaveBeenCalledWith({
+      agentId: "archive-me",
+      archivedAt,
+      record: { ...stored, archivedAt },
+    });
+  });
+
+  it("stays silent when the host provides no notifyAgentArchived", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    spies.agentStorage.get.mockResolvedValue(createStoredRecord({ id: "archive-me" }));
+    (agentManager as unknown as Record<string, unknown>).archiveSnapshot = vi
+      .fn()
+      .mockResolvedValue(createStoredRecord({ id: "archive-me" }));
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createClaudeOnlyManager(),
+      logger: createTestLogger(),
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "archive_agent"), {
+      agentId: "archive-me",
+    });
+
+    expect(response.structuredContent).toEqual({ success: true });
+  });
+});

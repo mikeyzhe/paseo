@@ -74,6 +74,7 @@ import {
   setAgentModeCommand,
   updateAgentCommand,
 } from "../lifecycle-command.js";
+import type { ArchiveAgentResult } from "../lifecycle-command.js";
 import type { ForgeService } from "../../../services/forge-service.js";
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
 import type {
@@ -117,6 +118,13 @@ export interface PaseoToolHostDependencies {
   listActiveWorkspaces?: ArchiveDependencies["listActiveWorkspaces"];
   archiveWorkspaceRecord?: ArchiveDependencies["archiveWorkspaceRecord"];
   emitWorkspaceUpdatesForWorkspaceIds?: ArchiveDependencies["emitWorkspaceUpdatesForWorkspaceIds"];
+  /**
+   * Mirror an MCP-tool archive to agent-updates subscribers. The websocket
+   * archive path pushes through the acting session; the MCP tool has no
+   * session, so the host fans the archived record out across sessions instead.
+   * Absence keeps the legacy silent behavior for embedded hosts.
+   */
+  notifyAgentArchived?: (archived: ArchiveAgentResult) => Promise<void>;
   workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list" | "upsert">;
   projectRegistry?: Pick<ProjectRegistry, "get" | "list">;
   createDirectoryWorkspace?: (
@@ -2151,7 +2159,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({ agentId }) => {
-      await archiveAgentCommand(
+      const archived = await archiveAgentCommand(
         {
           agentManager,
           agentStorage,
@@ -2159,6 +2167,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         },
         agentId,
       );
+      await options.notifyAgentArchived?.(archived);
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),

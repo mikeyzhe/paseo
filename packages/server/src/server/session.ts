@@ -118,6 +118,7 @@ import {
   setAgentModeCommand,
   updateAgentCommand,
 } from "./agent/lifecycle-command.js";
+import type { ArchiveAgentResult } from "./agent/lifecycle-command.js";
 import { buildStoredAgentPayload, toAgentPayload } from "./agent/agent-projections.js";
 import {
   appendTimelineItemIfAgentKnown,
@@ -1431,6 +1432,15 @@ export class Session {
 
   async emitWorkspaceUpdatesForExternalWorkspaceIds(workspaceIds: Iterable<string>): Promise<void> {
     await this.emitWorkspaceUpdatesForWorkspaceIds(workspaceIds);
+  }
+
+  /** Mirror an archive performed outside this session (MCP tool, hub) to subscribers. */
+  async emitAgentArchiveForExternalMutation(archived: ArchiveAgentResult): Promise<void> {
+    if (!this.agentUpdates.hasSubscription()) return;
+    const payload = await this.agentUpdates.emitStoredRecord(archived.record);
+    if (payload.workspaceId) {
+      await this.emitWorkspaceUpdateForWorkspaceId(payload.workspaceId);
+    }
   }
 
   async syncWorkspaceGitObserversForExternalWorkspaceIds(
