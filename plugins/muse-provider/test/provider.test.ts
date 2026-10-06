@@ -469,7 +469,7 @@ test("uploaded_file attachment passes a path reference as text instead of failin
     "Size: 42 bytes",
   ].join("\n");
   expect(turn?.params.input).toContainEqual({ type: "text", text: reference });
-  expect(turn?.params.displayText).toBe(`please read this\n${reference}`);
+  expect(turn?.params.displayText).toBe("please read this");
 });
 test("uploaded_file attachment without a path fails with a diagnostic instead of writing a file", async () => {
   const h = await harness("image-followup");
@@ -506,6 +506,77 @@ test("uploaded_file attachment without a path fails with a diagnostic instead of
     result: { type: "failed", error: { message: expect.stringContaining("ghost.bin") } },
   });
   expect((await h.recorded()).filter((frame) => frame.method === "turn/start")).toEqual([]);
+});
+// 2026-10-06 live bug (Muse2 run_123b0b4b turn:2015): Muse composes the
+// userMessage echo from its own input representation — "userText[Image #1]"
+// plus any file-reference text parts, no separator — and ignores the turn/start
+// displayText param. The daemon relays that text verbatim, and HomeTool stamps
+// client_send_id/provenance onto the card only when the echoed user text
+// matches the sent text, so every Muse prompt with an attachment lost its
+// client identity (fleet3's optimistic bubble never reconciled). The provider
+// must echo the user's own words for commands it sent.
+test("user echo stays the user's text when Muse inlines image markers and file references", async () => {
+  const h = await harness("image-followup");
+  await h.open();
+  const userText = "wait, is this 3 tabs in FF";
+  const from = await h.send({
+    type: "session.prompt",
+    sessionId: "paseo-session",
+    prompt: {
+      clientMessageId: "client-incident",
+      delivery: "auto",
+      input: {
+        type: "message",
+        content: [
+          { type: "text", text: userText },
+          { type: "image", mimeType: "image/png", data: "image-bytes" },
+          {
+            type: "uploaded_file",
+            id: "upload-incident",
+            fileName: "image-94861234.png",
+            mimeType: "image/png",
+            size: 50219,
+            path: "/Users/mikehe/.paseo/uploads/upload_e5841de1/image-94861234.png",
+          },
+        ],
+      },
+    },
+  });
+  const echo = await h.wait(
+    (event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "user_message" &&
+      event.item.clientMessageId === "client-incident",
+    from,
+  );
+  expect(echo.item).toMatchObject({ type: "user_message", text: userText });
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed", from);
+  const turn = (await h.recorded()).find((frame) => frame.method === "turn/start");
+  const reference = [
+    "Uploaded file: image-94861234.png",
+    "Path: /Users/mikehe/.paseo/uploads/upload_e5841de1/image-94861234.png",
+    "MIME: image/png",
+    "Size: 50219 bytes",
+  ].join("\n");
+  expect(turn?.params.input).toContainEqual({ type: "text", text: reference });
+  expect(turn?.params.displayText).toBe(userText);
+});
+test("user echo rewrite applies only to commands this session sent", async () => {
+  const h = await harness("resume-without-cursor");
+  await h.open({
+    version: 1,
+    data: { sessionId: "saved-session" },
+  });
+  // Inline history replays userMessages whose commandIds predate this process:
+  // their recorded text must pass through unchanged (no mapping, no rewrite).
+  const replayed = h.events.find(
+    (event) =>
+      event.type === "timeline.item" &&
+      event.item.type === "user_message" &&
+      event.item.text === "Reply exactly RESUME_MARKER_OK without tools.",
+  );
+  expect(replayed).toBeDefined();
+  expect(replayed!.item.clientMessageId).toBeUndefined();
 });
 for (const source of ["live", "history", "backfill"]) {
   test(`reminder housekeeping emits no timeline items or child sessions from ${source}`, async () => {
