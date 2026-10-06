@@ -166,20 +166,13 @@ export function appendDelta(
   return { ...previous, summary };
 }
 
-// HOTFIX (2026-10-05, fleet-local): readOutput notFound must not fail the turn — display-only fetch. Remove when Paseo ships a fix.
-// Muse reports a vanished edit patch via item/readOutput error kinds "notFound"
-// / "outputUnavailable" (msp.d.ts); connection.ts surfaces them as MuseError
-// kinds via error.data.kind. The message fallback covers servers that omit data.
-function isMissingPatchOutput(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if (error instanceof MuseError)
-    return (
-      error.kind === "notFound" ||
-      error.kind === "outputUnavailable" ||
-      /output ref was not found|output is unavailable/i.test(error.message)
-    );
-  return /output ref was not found|output is unavailable/i.test(error.message);
-}
+// The edit-diff fetch via item/readOutput is display-only: whatever fails —
+// timeout, notFound/outputUnavailable, internal/rpc, invalidPatch, or a
+// malformed patch document — the item still renders without a diff, one
+// stderr line records why, and the turn never fails. (2026-10-06 live bug:
+// a readOutput timeout escaped the earlier notFound-only gate as
+// MuseError("timeout") and failed the turn.)
+const READ_OUTPUT_TIMEOUT_MS = 30000;
 
 export class Timeline {
   private readonly items = new Map<string, WireItem>();
@@ -202,16 +195,20 @@ export class Timeline {
           "item/readOutput",
           { sessionId: this.nativeId, itemId: item.itemId, outputRef: item.patchRef.id },
           outputSchema,
+          READ_OUTPUT_TIMEOUT_MS,
         );
         if (output.encoding !== "utf8" || !output.eof)
           throw new MuseError("invalidPatch", "Muse edit patch is not a complete UTF-8 document");
         patch = unifiedDiff(output.content);
       } catch (error) {
-        // HOTFIX (2026-10-05, fleet-local): readOutput notFound must not fail the turn — display-only fetch. Remove when Paseo ships a fix.
-        if (!isMissingPatchOutput(error)) throw error;
+        // Display-only fetch: never fail the turn, just render without a diff.
+        let kind: string;
+        if (error instanceof MuseError) kind = error.kind;
+        else if (error instanceof Error) kind = error.name;
+        else kind = "error";
         const message = (error instanceof Error ? error.message : String(error)).slice(0, 120);
         process.stderr.write(
-          `[muse-provider HOTFIX readOutput] item ${item.itemId}: ${message} — rendered without diff\n`,
+          `[muse-provider] item ${item.itemId}: readOutput ${kind}: ${message} — rendered without diff\n`,
         );
       }
     }
