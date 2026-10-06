@@ -226,6 +226,8 @@ function readOutputFaultResponse(frame) {
       id: frame.id,
       error: { code: -32001, message: "item or attached output ref was not found" },
     });
+  } else if (fault === "hang") {
+    // No response at all: the provider's per-request timeout is the only way out.
   } else {
     const messages = {
       notFound: "item or attached output ref was not found",
