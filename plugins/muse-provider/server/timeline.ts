@@ -92,11 +92,17 @@ export function timelineItem(
   item: WireItem,
   clientMessageId?: string,
   patch?: string,
+  echoText?: string,
 ): ProviderTimelineItem {
   const id = item.itemId;
   switch (item.kind) {
     case "userMessage":
-      return { type: "user_message", id, text: item.displayText ?? item.text, clientMessageId };
+      return {
+        type: "user_message",
+        id,
+        text: echoText ?? item.displayText ?? item.text,
+        clientMessageId,
+      };
     case "agentMessage":
       return { type: "assistant_message", id, text: item.text };
     case "reasoning":
@@ -182,6 +188,15 @@ export class Timeline {
     private readonly id: string,
     private readonly emit: (event: ProviderEvent) => void,
     private readonly clientMessage: (commandId: string) => string | undefined = () => undefined,
+    // (2026-10-06 live bug, Muse2 run_123b0b4b turn:2015) Muse composes the
+    // userMessage echo from its own input representation — inline images as
+    // "[Image #N]" markers abutting the text with no separator, appended file
+    // references included — and ignores the turn/start displayText param. The
+    // daemon relays that text verbatim and HomeTool's user-echo envelope match
+    // (client_send_id + provenance + attachments) is text-exact, so any prompt
+    // with an attachment lost its client identity. When this session sent the
+    // command we know the user's own words; echo those instead.
+    private readonly echoText: (commandId: string) => string | undefined = () => undefined,
   ) {}
   async fold(item: WireItem): Promise<boolean> {
     // Reminder children are Muse housekeeping, not agent work or navigable subagents.
@@ -213,6 +228,8 @@ export class Timeline {
       }
     }
     this.items.set(item.itemId, item);
+    const echoText =
+      item.kind === "userMessage" && item.commandId ? this.echoText(item.commandId) : undefined;
     this.emit({
       type: "timeline.item",
       sessionId: this.id,
@@ -220,6 +237,7 @@ export class Timeline {
         item,
         item.commandId ? this.clientMessage(item.commandId) : undefined,
         patch,
+        echoText,
       ),
       timestamp: item.recordedAt,
     });
