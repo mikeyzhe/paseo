@@ -72,6 +72,10 @@ export class Session {
   private catalog: ProviderCatalog = { models: [], modes };
   private readonly approvals = new Map<string, WireApproval>();
   private readonly messages = new Map<string, string>();
+  // commandId → the user's own words for that prompt (see Timeline's echoText):
+  // the exact text the daemon must echo so HomeTool's user-echo envelope match
+  // stamps client_send_id/provenance onto the turn card.
+  private readonly echoTexts = new Map<string, string>();
   private readonly turns = new Map<string, "active" | "completed">();
   private notifications: Promise<void> = Promise.resolve();
   private readonly buffered: Notification[] = [];
@@ -235,6 +239,7 @@ export class Session {
         this.options.id,
         this.options.emit,
         (messageCommandId) => this.messages.get(messageCommandId),
+        (messageCommandId) => this.echoTexts.get(messageCommandId),
       ),
       questions: new Questions(this.host, nativeId, this.options.id, this.options.emit),
       commands: new Commands(this.host, nativeId, this.options.id, this.options.emit),
@@ -351,8 +356,9 @@ export class Session {
   async prompt(prompt: ProviderPrompt): Promise<void> {
     if (await this.live().commands.compact(prompt)) return;
     const id = commandId();
-    this.messages.set(id, prompt.clientMessageId);
     const { input, text } = this.turnInput(prompt);
+    this.messages.set(id, prompt.clientMessageId);
+    this.echoTexts.set(id, text.join("\n"));
     const params: TurnStartParams = {
       commandId: id,
       sessionId: this.live().nativeId,
@@ -392,6 +398,7 @@ export class Session {
       // stay correct.
       const resubmitId = commandId();
       this.messages.set(resubmitId, prompt.clientMessageId);
+      this.echoTexts.set(resubmitId, text.join("\n"));
       response = await this.host.command(
         "turn/start",
         { ...params, commandId: resubmitId },
@@ -450,8 +457,12 @@ export class Session {
           `MIME: ${part.mimeType}`,
           `Size: ${part.size} bytes`,
         ].join("\n");
+        // The reference is model input ONLY: displayText stays the user's own
+        // words (2026-10-06 live bug, Muse2 run_123b0b4b turn:2015 — the
+        // reference leaked into displayText and the card showed
+        // "…still there[Image #1]Uploaded file: …"). Images have never
+        // contributed to displayText here; files match that behaviour.
         input.push({ type: "text", text: reference });
-        text.push(reference);
       } else throw new MuseError("unsupported", `Muse does not support ${part.type} attachments`);
     }
     return { input, text };
