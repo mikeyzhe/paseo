@@ -20,6 +20,7 @@ const connections: ProviderConnection[] = [];
 const roots: string[] = [];
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   await Promise.all(connections.splice(0).map((connection) => connection.close()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -1581,20 +1582,72 @@ test("readOutput success renders the edit with its diff", async () => {
   }
 });
 
-test("readOutput internal errors still surface runtime_failed unchanged", async () => {
+test("readOutput timing out renders the edit without a diff and completes the turn", async () => {
+  // 2026-10-06 live bug: a hung item/readOutput escaped the notFound-only
+  // hotfix gate as MuseError("timeout") and failed the whole turn. The diff
+  // fetch is display-only, so its per-request timeout must downgrade to a
+  // diff-less render, exactly one stderr line, and a completed turn.
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const h = await harness("tools-edit", { MUSE_TEST_READOUTPUT_FAULT: "hang" });
+  await h.open();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  await h.prompt();
+  for (let count = 0; count < 200; count++) {
+    if ((await h.recorded()).some((frame) => frame.method === "item/readOutput")) break;
+    await delay(10);
+  }
+  await vi.advanceTimersByTimeAsync(30000);
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  const edits = h.events.filter(
+    (event) =>
+      event.type === "timeline.item" &&
+      (event as { item?: { detail?: { type?: string } } }).item?.detail?.type === "edit" &&
+      (event as { item?: { status?: string } }).item?.status === "completed",
+  );
+  expect(edits.length).toBeGreaterThan(0);
+  for (const edit of edits) {
+    expect(
+      (edit as { item: { detail: { unifiedDiff?: unknown } } }).item.detail.unifiedDiff,
+    ).toBeUndefined();
+  }
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  const lines = stderr.mock.calls
+    .map((call) => String(call[0]))
+    .filter((line) => line.includes("rendered without diff"));
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toMatch(
+    /^\[muse-provider\] item [^:]+: readOutput timeout: Muse item\/readOutput timed out — rendered without diff\n$/,
+  );
+});
+
+test("readOutput internal errors render the edit without a diff and complete the turn", async () => {
+  // Flipped 2026-10-06: the edit-diff fetch is display-only, so even an
+  // internal readOutput error must render the edit without a diff and
+  // complete the turn instead of surfacing runtime_failed.
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
   const h = await harness("tools-edit", { MUSE_TEST_READOUTPUT_FAULT: "internal" });
   await h.open();
   await h.prompt();
-  expect(await h.wait((event) => event.type === "session.runtime_failed")).toMatchObject({
-    error: { code: "internal" },
-  });
-  // The completed edit item is not emitted when its patch fetch hard-fails.
-  expect(
-    h.events.filter(
-      (event) =>
-        event.type === "timeline.item" &&
-        (event as { item?: { detail?: { type?: string } } }).item?.detail?.type === "edit" &&
-        (event as { item?: { status?: string } }).item?.status === "completed",
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  const edits = h.events.filter(
+    (event) =>
+      event.type === "timeline.item" &&
+      (event as { item?: { detail?: { type?: string } } }).item?.detail?.type === "edit" &&
+      (event as { item?: { status?: string } }).item?.status === "completed",
+  );
+  expect(edits.length).toBeGreaterThan(0);
+  for (const edit of edits) {
+    expect(
+      (edit as { item: { detail: { unifiedDiff?: unknown } } }).item.detail.unifiedDiff,
+    ).toBeUndefined();
+  }
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  const lines = stderr.mock.calls
+    .map((call) => String(call[0]))
+    .filter((line) => line.includes("rendered without diff"));
+  expect(lines).toEqual([
+    expect.stringMatching(
+      /^\[muse-provider\] item [^:]+: readOutput internal: boom — rendered without diff\n$/,
     ),
-  ).toEqual([]);
+  ]);
 });

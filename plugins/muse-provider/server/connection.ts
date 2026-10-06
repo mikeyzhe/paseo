@@ -123,15 +123,23 @@ export class MspConnection {
       }
     }
   }
-  async request<T>(method: string, params: object, schema: z.ZodType<T>): Promise<T> {
+  async request<T>(
+    method: string,
+    params: object,
+    schema: z.ZodType<T>,
+    options?: { timeoutMs?: number },
+  ): Promise<T> {
     if (this.failure) throw this.failure;
     if (this.closing) throw new MuseError("closed", "Muse host is closing");
     const id = ++this.sequence;
     const response = await new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new MuseError("timeout", `Muse ${method} timed out`));
-      }, this.options.timeoutMs ?? 10000);
+      const timer = setTimeout(
+        () => {
+          this.pending.delete(id);
+          reject(new MuseError("timeout", `Muse ${method} timed out`));
+        },
+        options?.timeoutMs ?? this.options.timeoutMs ?? 10000,
+      );
       this.pending.set(id, { resolve, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params });
     });
