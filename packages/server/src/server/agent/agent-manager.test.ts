@@ -3808,6 +3808,131 @@ test("createAgent reports available providers when selected provider is unavaila
   );
 });
 
+test("createAgent includes the provider diagnostic in the unavailable reason", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class LoggedOutCodexClient extends TestAgentClient {
+    override async isAvailable(): Promise<boolean> {
+      return false;
+    }
+
+    async getDiagnostic(): Promise<{ diagnostic: string }> {
+      return { diagnostic: "Run `codex login` to authenticate" };
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: {
+      codex: new LoggedOutCodexClient(),
+      claude: new TestAgentClient(),
+    },
+    registry: storage,
+    logger,
+  });
+
+  await expect(
+    manager.createAgent(
+      {
+        provider: "codex",
+        cwd: workdir,
+      },
+      undefined,
+      { workspaceId: undefined },
+    ),
+  ).rejects.toThrow(
+    "Provider 'codex' is not available. Reason: Run `codex login` to authenticate. Available providers: claude.",
+  );
+});
+
+test("listDraftCommands throws a coded provider-unavailable error with the diagnostic", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class LoggedOutMuseClient extends TestAgentClient {
+    override async isAvailable(): Promise<boolean> {
+      return false;
+    }
+
+    async getDiagnostic(): Promise<{ diagnostic: string }> {
+      return { diagnostic: "Run `muse login` or set META_API_KEY" };
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { muse: new LoggedOutMuseClient("muse") },
+    registry: storage,
+    logger,
+  });
+
+  const failure = await manager
+    .listDraftCommands({ provider: "muse", cwd: workdir, model: "m1" })
+    .then(
+      () => null,
+      (error: unknown) => error,
+    );
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toBe(
+    "Provider 'muse' is not available [provider_unavailable:auth]: Run `muse login` or set META_API_KEY",
+  );
+  expect((failure as { code?: string }).code).toBe("provider_unavailable:auth");
+});
+
+test("listDraftCommands reports a disabled provider as disabled", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class UnavailableMuseClient extends TestAgentClient {
+    override async isAvailable(): Promise<boolean> {
+      return false;
+    }
+  }
+
+  const client = new UnavailableMuseClient("muse");
+  const manager = new AgentManager({
+    clients: { muse: client },
+    registry: storage,
+    logger,
+  });
+  manager.updateProviderRegistry({
+    providerDefinitions: { muse: { enabled: false } },
+    clients: { muse: client },
+  });
+
+  await expect(
+    manager.listDraftCommands({ provider: "muse", cwd: workdir, model: "m1" }),
+  ).rejects.toThrow(
+    "Provider 'muse' is not available [provider_unavailable:disabled]: Provider 'muse' is disabled.",
+  );
+});
+
+test("listDraftCommands maps a throwing probe to probe_error", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class ThrowingMuseClient extends TestAgentClient {
+    override async isAvailable(): Promise<boolean> {
+      throw new Error("socket hang up");
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { muse: new ThrowingMuseClient("muse") },
+    registry: storage,
+    logger,
+  });
+
+  await expect(
+    manager.listDraftCommands({ provider: "muse", cwd: workdir, model: "m1" }),
+  ).rejects.toThrow(
+    "Provider 'muse' is not available [provider_unavailable:probe_error]: socket hang up",
+  );
+});
+
 test("createAgent rejects a disabled provider without creating a session", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");
