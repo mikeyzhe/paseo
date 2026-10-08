@@ -153,6 +153,7 @@ export const persistenceSchema = z.object({
   sessionId: z.string(),
   model: z.string().optional(),
   thinkingOption: effortSchema.optional(),
+  echoTexts: z.record(z.string(), z.string()).optional(),
 });
 export const deltaSchema = z.object({
   itemId: z.string(),
