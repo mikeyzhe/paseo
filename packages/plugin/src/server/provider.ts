@@ -253,7 +253,7 @@ export type ProviderInput =
       history: "replay" | "skip";
     }
   | { type: "session.prompt"; sessionId: string; prompt: ProviderPrompt }
-  | { type: "session.interrupt"; requestId: string; sessionId: string }
+  | { type: "session.interrupt"; requestId: string; sessionId: string; turnId?: string }
   | {
       type: "session.permission";
       sessionId: string;
@@ -912,7 +912,12 @@ export const ProviderInputSchema: z.ZodType<ProviderInput> = z.discriminatedUnio
     .object({ type: z.literal("session.prompt"), sessionId: idSchema, prompt: promptSchema })
     .strict(),
   z
-    .object({ type: z.literal("session.interrupt"), requestId: idSchema, sessionId: idSchema })
+    .object({
+      type: z.literal("session.interrupt"),
+      requestId: idSchema,
+      sessionId: idSchema,
+      turnId: idSchema.optional(),
+    })
     .strict(),
   z
     .object({

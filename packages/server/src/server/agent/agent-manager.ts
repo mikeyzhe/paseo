@@ -397,6 +397,8 @@ type ActiveTurnTerminalDisposition = "closed_current" | "stale" | "untracked";
 
 interface HandleStreamEventOptions {
   fromHistory?: boolean;
+  /** Who produced the event: the provider, or the daemon synthesizing a terminal. */
+  source?: "provider" | "synthetic";
 }
 
 interface ManagedAgentBase {
@@ -2562,8 +2564,13 @@ export class AgentManager {
       pendingRun.start = { status: "started", turnId };
       agent.activeForegroundTurnId = turnId;
       this.openActiveTurn(agent, turnId, turnStartedAt);
+      this.reconcileReusedFinalizedTurn(agent, turnId, "foreground");
       agent.lifecycle = "running";
       this.touchUpdatedAt(agent);
+      this.logger.info(
+        { agentId, turnId, kind: "foreground", source: "provider" },
+        "agent.turn.start",
+      );
       // AgentManager owns the accepted-turn boundary. Publish liveness before the canonical
       // prompt so clients can retire optimistic activity without painting an idle frame.
       // The provider's duplicate start for this turn is suppressed at the ingestion boundary.
@@ -3070,32 +3077,48 @@ export class AgentManager {
       return { status: "not_running" };
     }
 
-    const interruptAcknowledged = await this.interruptSession(agent.session, agentId);
+    const interruptTurnId = this.runs.getTurnId(agentId);
+    const interruptAcknowledged = await this.interruptSession(
+      agent.session,
+      agentId,
+      interruptTurnId ?? undefined,
+    );
     const settlement = await this.waitWithTimeout({
       operation: run.settledPromise,
-      timeoutMs: interruptAcknowledged
-        ? INTERRUPT_SESSION_TIMEOUT_MS
-        : this.rescueTimeouts.interruptSessionMs,
+      timeoutMs: this.rescueTimeouts.interruptSessionMs,
     });
 
     if (!interruptAcknowledged) {
       return { status: settlement === "completed" ? "settled" : "refused" };
     }
 
-    const runTurnId = this.runs.getTurnId(agentId);
-    if (settlement === "timed_out" && runTurnId) {
+    if (settlement !== "timed_out") {
+      this.resolveInterruptedPermissions(agent);
+      return { status: "settled" };
+    }
+
+    const runTurnId = this.runs.getTurnId(agentId) ?? interruptTurnId;
+    // The provider kept the turn alive past an acknowledged interrupt. Terminate
+    // its runtime so the daemon and the provider agree the turn is over (the
+    // session goes stale and the next prompt reloads/resumes it), then force a
+    // terminal locally. Every wait below is bounded: cancel must always return.
+    await this.terminateProviderRuntime(agent, runTurnId ?? undefined);
+    if (runTurnId) {
       this.logger.warn(
         { agentId, turnId: runTurnId, kind: run.kind },
         "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
       );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-        turnId: runTurnId,
-      });
-      await run.settledPromise;
-    } else if (settlement === "timed_out" && run.kind === "foreground") {
+      await this.dispatchSessionEvent(
+        agent,
+        {
+          type: "turn_canceled",
+          provider: agent.provider,
+          reason: "interrupted",
+          turnId: runTurnId,
+        },
+        { source: "synthetic" },
+      );
+    } else if (run.kind === "foreground") {
       this.logger.warn(
         { agentId, kind: run.kind },
         "cancelAgentRun: acknowledged pending turn still active after timeout, clearing it",
@@ -3106,24 +3129,89 @@ export class AgentManager {
         this.touchUpdatedAt(agent);
         this.emitState(agent);
       }
-    } else if (settlement === "timed_out" && run.kind === "autonomous") {
+    } else {
       this.logger.warn(
         { agentId, kind: run.kind },
         "cancelAgentRun: acknowledged turn still active after timeout, force-canceling",
       );
-      await this.dispatchSessionEvent(agent, {
-        type: "turn_canceled",
-        provider: agent.provider,
-        reason: "interrupted",
-      });
+      await this.dispatchSessionEvent(
+        agent,
+        {
+          type: "turn_canceled",
+          provider: agent.provider,
+          reason: "interrupted",
+        },
+        { source: "synthetic" },
+      );
     }
 
+    if (this.runs.getRun(agentId) === run && !run.settled) {
+      const settled = await this.waitWithTimeout({
+        operation: run.settledPromise,
+        timeoutMs: this.rescueTimeouts.interruptSessionMs,
+      });
+      if (settled === "timed_out") {
+        this.logger.warn(
+          { agentId, turnId: runTurnId ?? undefined, kind: run.kind },
+          "cancelAgentRun: run still unsettled after synthetic cancel, settling directly",
+        );
+        this.forceSettleCanceledRun(agent, runTurnId ?? undefined);
+      }
+    }
+
+    this.resolveInterruptedPermissions(agent);
+    return { status: "settled" };
+  }
+
+  private resolveInterruptedPermissions(agent: ActiveManagedAgent): void {
     if (agent.pendingPermissions.size > 0) {
       this.resolvePendingPermissionsForAgent(agent, agent.provider, undefined, "Interrupted");
       this.touchUpdatedAt(agent);
       this.emitState(agent);
     }
-    return { status: "settled" };
+  }
+
+  /** Last-resort settlement for a canceled run whose terminal never landed. */
+  private forceSettleCanceledRun(agent: ActiveManagedAgent, turnId?: string): void {
+    this.runs.clearAgentRun(agent.id);
+    // A cancel is not an error: clear any stale error so finalize reaches idle.
+    agent.lastError = undefined;
+    this.finalizeForegroundTurn(agent, turnId);
+  }
+
+  private async terminateProviderRuntime(
+    agent: ActiveManagedAgent,
+    turnId?: string,
+  ): Promise<void> {
+    const terminate = agent.session.terminateRuntime?.bind(agent.session);
+    if (!terminate) return;
+    this.logger.warn(
+      { agentId: agent.id, turnId: turnId ?? undefined },
+      "cancelAgentRun: terminating provider runtime after unsettled interrupt",
+    );
+    try {
+      await this.waitWithTimeout({
+        operation: terminate(),
+        timeoutMs: this.rescueTimeouts.interruptSessionMs,
+        onLateError: (error) => {
+          this.logger.warn(
+            { err: error, agentId: agent.id },
+            "Provider runtime termination failed after timeout",
+          );
+        },
+      });
+    } catch (error) {
+      this.logger.warn({ err: error, agentId: agent.id }, "Provider runtime termination failed");
+    }
+  }
+
+  private reconcileReusedFinalizedTurn(
+    agent: ActiveManagedAgent,
+    turnId: string,
+    kind: string,
+  ): void {
+    if (!this.runs.unfinalizeTurn(agent, turnId)) return;
+    this.logger.warn({ agentId: agent.id, turnId, kind }, "Provider reused finalized turn id");
   }
 
   private async cancelAgentRunBefore(
@@ -3136,10 +3224,14 @@ export class AgentManager {
     }
   }
 
-  private async interruptSession(session: AgentSession, agentId: string): Promise<boolean> {
+  private async interruptSession(
+    session: AgentSession,
+    agentId: string,
+    turnId?: string,
+  ): Promise<boolean> {
     try {
       const result = await this.waitWithTimeout({
-        operation: session.interrupt(),
+        operation: session.interrupt(turnId === undefined ? undefined : { turnId }),
         timeoutMs: this.rescueTimeouts.interruptSessionMs,
         onLateError: (error) => {
           this.logger.warn(
@@ -3883,6 +3975,7 @@ export class AgentManager {
   private async dispatchSessionEvent(
     agent: ActiveManagedAgent,
     event: AgentStreamEvent,
+    options?: HandleStreamEventOptions,
   ): Promise<void> {
     if (event.type === "provider_subagent") {
       const update = this.providerSubagents.apply(agent.id, event.provider, event.event);
@@ -3903,7 +3996,7 @@ export class AgentManager {
       "agent.manager.dispatch_session_event",
     );
 
-    const shouldNotifyWaiters = await this.handleStreamEvent(agent, event);
+    const shouldNotifyWaiters = await this.handleStreamEvent(agent, event, options);
 
     if (!shouldNotifyWaiters) {
       return;
@@ -4228,12 +4321,10 @@ export class AgentManager {
     const eventTurnId = identified.turnId;
     const isForegroundEvent = agent.activeForegroundTurnId === eventTurnId;
     this.traceHandleStreamEventStart(agent, event, eventTurnId, isForegroundEvent);
-    if (
-      eventTurnId &&
-      isTurnTerminalEvent(event) &&
-      this.runs.hasFinalizedTurn(agent, eventTurnId)
-    ) {
-      return false;
+    if (eventTurnId && isTurnTerminalEvent(event)) {
+      if (this.observeTurnTerminal(agent, event, eventTurnId, options?.source ?? "provider")) {
+        return false;
+      }
     }
 
     // Only update timestamp for live events, not history replay
@@ -4286,6 +4377,34 @@ export class AgentManager {
     this.traceHandleStreamEventEnd(agent, event, eventTurnId, flags);
 
     return flags.shouldNotifyWaiters;
+  }
+
+  /**
+   * Log a live turn terminal (one line per agent turn) and decide whether it is
+   * a stale duplicate of an already-finalized turn. A terminal for the tracked
+   * run's own turnId is never a duplicate — the provider may reuse a finalized
+   * id for a new run — so it is processed to let that run settle.
+   */
+  private observeTurnTerminal(
+    agent: ActiveManagedAgent,
+    event: AgentStreamEvent,
+    eventTurnId: string,
+    source: "provider" | "synthetic",
+  ): boolean {
+    this.logger.info(
+      {
+        agentId: agent.id,
+        turnId: eventTurnId,
+        kind: this.runs.getRun(agent.id)?.kind ?? "untracked",
+        state: event.type,
+        source,
+      },
+      "agent.turn.terminal",
+    );
+    return (
+      this.runs.hasFinalizedTurn(agent, eventTurnId) &&
+      this.runs.getTurnId(agent.id) !== eventTurnId
+    );
   }
 
   private traceHandleStreamEventStart(
@@ -4650,6 +4769,11 @@ export class AgentManager {
     this.runs.trackAutonomousRun(agent.id, eventTurnId ?? null);
     if (eventTurnId) {
       this.openActiveTurn(agent, eventTurnId, new Date());
+      this.reconcileReusedFinalizedTurn(agent, eventTurnId, "autonomous");
+      this.logger.info(
+        { agentId: agent.id, turnId: eventTurnId, kind: "autonomous", source: "provider" },
+        "agent.turn.start",
+      );
     }
     agent.lifecycle = "running";
     this.emitState(agent);
