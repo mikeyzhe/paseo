@@ -94,6 +94,14 @@ import {
   type ProviderSubagentDescriptor,
   type ProviderSubagentStoreEvent,
 } from "./provider-subagents/store.js";
+import {
+  classifyProviderProbeError,
+  classifyProviderUnavailable,
+  createProviderUnavailableError,
+  PROVIDER_UNAVAILABLE_DIAGNOSTIC_TIMEOUT_MS,
+  toProviderUnavailableDetailLine,
+  type ProviderUnavailableReason,
+} from "./provider-unavailable-error.js";
 import { withTimeout } from "../../utils/promise-timeout.js";
 import { extractAttention } from "../persistence-hooks.js";
 
@@ -1131,12 +1139,7 @@ export class AgentManager {
     if (!normalizedConfig.model) {
       return [];
     }
-    const available = await client.isAvailable();
-    if (!available) {
-      throw new Error(
-        `Provider '${normalizedConfig.provider}' is not available. Please ensure the CLI is installed.`,
-      );
-    }
+    await this.assertClientAvailable(normalizedConfig.provider, client);
 
     if (client.listCommands) {
       return await client.listCommands(normalizedConfig);
@@ -1168,12 +1171,7 @@ export class AgentManager {
     if (!normalizedConfig.model && !client.listFeatures) {
       return [];
     }
-    const available = await client.isAvailable();
-    if (!available) {
-      throw new Error(
-        `Provider '${normalizedConfig.provider}' is not available. Please ensure the CLI is installed.`,
-      );
-    }
+    await this.assertClientAvailable(normalizedConfig.provider, client);
 
     if (client.listFeatures) {
       return await client.listFeatures(normalizedConfig);
@@ -1409,12 +1407,7 @@ export class AgentManager {
       { purpose },
     );
     const client = this.requireClient(handle.provider);
-    const available = await client.isAvailable();
-    if (!available) {
-      throw new Error(
-        `Provider '${handle.provider}' is not available. Please ensure the CLI is installed.`,
-      );
-    }
+    await this.assertClientAvailable(handle.provider, client);
     this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
     const launchContext = await this.buildLaunchContext(
       resolvedAgentId,
@@ -5419,6 +5412,46 @@ export class AgentManager {
     return launchContext.paseoTools ? stripInternalPaseoMcpServer(launchConfig) : launchConfig;
   }
 
+  private async describeProviderUnavailable(
+    provider: AgentProvider,
+  ): Promise<{ reason: ProviderUnavailableReason; detail: string | null }> {
+    if (this.providerEnabled.get(provider) === false) {
+      return { reason: "disabled", detail: null };
+    }
+    const client = this.clients.get(provider);
+    if (!client?.getDiagnostic) {
+      return { reason: "unavailable", detail: null };
+    }
+    try {
+      const result = await withTimeout(
+        client.getDiagnostic(),
+        PROVIDER_UNAVAILABLE_DIAGNOSTIC_TIMEOUT_MS,
+        `Timed out collecting '${provider}' diagnostic after ${PROVIDER_UNAVAILABLE_DIAGNOSTIC_TIMEOUT_MS}ms`,
+      );
+      return {
+        reason: classifyProviderUnavailable(result.diagnostic),
+        detail: result.diagnostic,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { reason: classifyProviderProbeError(message), detail: message };
+    }
+  }
+
+  private async assertClientAvailable(provider: AgentProvider, client: AgentClient): Promise<void> {
+    let available: boolean;
+    try {
+      available = await client.isAvailable();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw createProviderUnavailableError(provider, classifyProviderProbeError(message), message);
+    }
+    if (!available) {
+      const { reason, detail } = await this.describeProviderUnavailable(provider);
+      throw createProviderUnavailableError(provider, reason, detail);
+    }
+  }
+
   private async requireAvailableClient(options: { provider: AgentProvider }): Promise<AgentClient> {
     const client = this.clients.get(options.provider);
     if (!client) {
@@ -5438,6 +5471,12 @@ export class AgentManager {
       }
     } catch (error) {
       unavailableReason = error instanceof Error ? error.message : String(error);
+    }
+    if (!unavailableReason) {
+      const { detail } = await this.describeProviderUnavailable(options.provider);
+      if (detail) {
+        unavailableReason = toProviderUnavailableDetailLine(detail);
+      }
     }
 
     const availableProviders = (await this.listProviderAvailability())
