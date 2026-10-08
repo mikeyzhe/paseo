@@ -67,6 +67,11 @@ export class Session {
   private host: MspConnection;
   private liveState: Live | undefined;
   private providerId: string | undefined;
+  // HOTFIX (2026-10-05, fleet-local): Muse #79 — in-memory gap-recovery
+  // cursor only (upstream #6159 deleted the persisted Session cursor; nothing
+  // here is persisted). Kept current in the notify path and used by
+  // host-replacement recovery. Remove when Paseo ships a fix.
+  private cursor: string | undefined;
   private config: ProviderSessionConfig;
   private catalog: ProviderCatalog = { models: [], modes };
   private readonly approvals = new Map<string, WireApproval>();
@@ -134,7 +139,9 @@ export class Session {
       const saved = persistenceSchema.parse(input.persistence.data);
       for (const [key, text] of Object.entries(saved.echoTexts ?? {}))
         this.echoTexts.set(key, text);
-      response = await this.resumeSession(saved.sessionId, saved.cursor);
+      // Upstream #6159: open-resume carries no persisted cursor; gap
+      // recovery cursors stay in memory (this.cursor) only.
+      response = await this.resumeSession(saved.sessionId, undefined);
       this.config = {
         ...this.config,
         model: this.config.model ?? saved.model,
