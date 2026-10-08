@@ -132,6 +132,8 @@ export class Session {
       if (input.persistence.version !== 1)
         throw new MuseError("invalidPersistence", "Unsupported Muse persistence version");
       const saved = persistenceSchema.parse(input.persistence.data);
+      for (const [key, text] of Object.entries(saved.echoTexts ?? {}))
+        this.echoTexts.set(key, text);
       response = await this.resumeSession(saved.sessionId, saved.cursor);
       this.config = {
         ...this.config,
@@ -251,11 +253,11 @@ export class Session {
         },
       ),
     };
-    this.providerId = response.session.providerId;
+    this.providerId = response.session.providerId ?? undefined;
     this.cursor = response.viewCursor;
     this.config = {
       ...this.config,
-      model: response.session.modelId,
+      model: response.session.modelId ?? this.config.model,
       mode: response.session.approvalMode?.mode ?? this.config.mode ?? "onRequest",
     };
   }
@@ -837,6 +839,9 @@ export class Session {
         sessionId: this.live().nativeId,
         ...(this.config.model ? { model: this.config.model } : {}),
         ...(this.config.thinkingOption ? { thinkingOption: this.config.thinkingOption } : {}),
+        // Restored sessions must echo the same user words, or the client's
+        // text-exact envelope match loses the turn's identity after a resume.
+        ...(this.echoTexts.size > 0 ? { echoTexts: Object.fromEntries(this.echoTexts) } : {}),
       },
     };
   }
