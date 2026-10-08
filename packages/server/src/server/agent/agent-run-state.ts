@@ -211,6 +211,11 @@ export class AgentRunState {
     return agent.finalizedForegroundTurnIds.has(turnId);
   }
 
+  /** Reopen a finalized turn id that a live run became bound to; true when it was finalized. */
+  unfinalizeTurn(agent: ForegroundRunAgentState, turnId: string): boolean {
+    return agent.finalizedForegroundTurnIds.delete(turnId);
+  }
+
   private clearRun(agentId: string, run: TrackedAgentRun): void {
     this.runs.delete(agentId);
     settleTrackedRun(run);
