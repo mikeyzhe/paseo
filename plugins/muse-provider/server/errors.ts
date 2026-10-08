@@ -49,6 +49,16 @@ export function isMuseRuntimeFault(message: string): boolean {
 
 export function actionableError(error: unknown, launch: ProviderLaunch): ProviderError {
   if (!(error instanceof Error)) return { code: "muse", message: String(error) };
+  // The Meta login lives in the macOS Keychain; when it is locked the
+  // credential read fails instead of reporting logged-out.
+  if (/keychain|user interaction is not allowed|interaction not allowed/i.test(error.message)) {
+    return {
+      code: "keychainLocked",
+      message:
+        "Muse credentials are unreadable (macOS Keychain locked). Unlock the Keychain or run `muse login`.",
+      diagnostic: error.message,
+    };
+  }
   // Muse 1.4.1 reports this profile failure as internal, without a specific error kind.
   if (
     error instanceof MuseError &&
