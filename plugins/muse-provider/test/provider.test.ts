@@ -1149,6 +1149,51 @@ test("interrupt targets the running turn when another prompt is queued", async (
   );
 });
 
+test("a queued turn's terminal is emitted even though it never started here", async () => {
+  const h = await harness("interrupt", {
+    MUSE_TEST_QUEUE: "1",
+    MUSE_TEST_QUEUE_TERMINAL: "1",
+  });
+  await h.open();
+  await h.prompt();
+  await h.wait((event) => event.type === "session.prompt_result");
+  const from = await h.prompt();
+  const queued = await h.wait((event) => event.type === "session.prompt_result", from);
+  if (queued.type !== "session.prompt_result" || queued.result.type !== "turn") {
+    throw new Error("Expected a queued turn result");
+  }
+  const queuedTurnId = queued.result.turnId;
+  const terminal = await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.state === "completed" && event.turnId === queuedTurnId,
+  );
+  expect(terminal).toMatchObject({
+    type: "session.turn",
+    state: "completed",
+    turnId: queuedTurnId,
+  });
+});
+
+test("interrupt with an explicit turnId interrupts that turn even when untracked", async () => {
+  const h = await harness("interrupt", { MUSE_TEST_INTERRUPT_ECHO: "1" });
+  await h.open();
+  const foreignTurnId = "01937ac1-7cde-7000-8000-000000000001";
+  await h.send({
+    type: "session.interrupt",
+    sessionId: "paseo-session",
+    requestId: "interrupt-untracked",
+    turnId: foreignTurnId,
+  });
+  await h.wait(
+    (event) => event.type === "request.completed" && event.requestId === "interrupt-untracked",
+  );
+  const requests = await h.recorded();
+  expect(requests.find((frame) => frame.method === "turn/interrupt")?.params).toMatchObject({
+    sessionId: expect.any(String),
+    turnId: foreignTurnId,
+  });
+});
+
 for (const terminal of ["completed", "failed"]) {
   test(`interrupt resolves when its targeted turn independently ends ${terminal}`, async () => {
     const h = await harness("interrupt", { MUSE_TEST_INTERRUPT_TERMINAL: terminal });
