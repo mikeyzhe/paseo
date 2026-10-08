@@ -666,12 +666,31 @@ class ProviderRuntimeSession {
     await this.runtime.complete(input);
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(options?: { turnId?: string }): Promise<void> {
     await this.runtime.complete({
       type: "session.interrupt",
       requestId: randomUUID(),
       sessionId: this.providerSessionId,
+      ...(options?.turnId !== undefined ? { turnId: options.turnId } : {}),
     });
+  }
+
+  /**
+   * Force the session into the runtime-failed state (host released, session stale so the
+   * next prompt reopens it from persistence) and ask the provider to close its host.
+   */
+  terminate(): Promise<void> {
+    void this.runtime
+      .complete({
+        type: "session.close",
+        requestId: randomUUID(),
+        sessionId: this.providerSessionId,
+      })
+      .catch(() => undefined);
+    this.connectionClosed(
+      new Error("Provider runtime terminated after an acknowledged interrupt failed to settle"),
+    );
+    return Promise.resolve();
   }
 
   async close(): Promise<void> {
@@ -1245,8 +1264,12 @@ class PluginAgentSession implements AgentSession {
       : null;
   }
 
-  async interrupt(): Promise<void> {
-    await this.bridge.interrupt();
+  async interrupt(options?: { turnId?: string }): Promise<void> {
+    await this.bridge.interrupt(options);
+  }
+
+  async terminateRuntime(): Promise<void> {
+    await this.bridge.terminate();
   }
 
   async close(): Promise<void> {

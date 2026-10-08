@@ -1359,6 +1359,7 @@ class McpCapableTestAgentClient extends TestAgentClient {
 
 class ControlledInterruptSession extends TestAgentSession {
   interruptCalled = false;
+  interruptOptions: { turnId?: string } | undefined;
 
   constructor(
     config: AgentSessionConfig,
@@ -1375,8 +1376,9 @@ class ControlledInterruptSession extends TestAgentSession {
     return { turnId: this.turnId };
   }
 
-  override async interrupt(): Promise<void> {
+  override async interrupt(options?: { turnId?: string }): Promise<void> {
     this.interruptCalled = true;
+    this.interruptOptions = options;
     await this.interruptBehavior(this);
   }
 }
@@ -2775,6 +2777,136 @@ test("cancelAgentRun succeeds when the provider queues completion before rejecti
       lifecycle: "idle",
       activeForegroundTurnId: null,
     });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("cancelAgentRun always returns when the synthetic cancel lands on a finalized turn id", async () => {
+  // Live failure (2026-10-07): a force-cancel finalized turn X while the provider
+  // kept running it; a later run bound to the same X had its synthetic (and real)
+  // terminals dropped as finalized, so cancelAgentRun awaited run.settledPromise
+  // forever and blocked the per-agent mutation lane.
+  const fixture = await createControlledInterruptFixture({
+    name: "interrupt-finalized-reuse",
+    agentId: "00000000-0000-4000-8000-000000000307",
+    turnId: "reused-finalized-turn",
+    interrupt: async () => {
+      // Acknowledge the interrupt but never settle the turn.
+    },
+  });
+
+  try {
+    await fixture.startForegroundRun();
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "settled",
+    });
+
+    // The provider restarts the same turn id as an autonomous run.
+    fixture.session.pushEvent({
+      type: "turn_started",
+      provider: "codex",
+      turnId: "reused-finalized-turn",
+    });
+    await waitForAgentLifecycle(fixture.manager, fixture.agentId, "running");
+
+    const bounded = <T>(promise: Promise<T>) =>
+      Promise.race([
+        promise,
+        new Promise<T>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("timed out")), 3000),
+        ),
+      ]);
+    await expect(bounded(fixture.manager.cancelAgentRun(fixture.agentId))).resolves.toEqual({
+      status: "settled",
+    });
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+    });
+
+    // The per-agent mutation lane is free: a follow-up cancel and a fresh run
+    // both complete instead of queueing behind a stuck cancel.
+    await expect(bounded(fixture.manager.cancelAgentRun(fixture.agentId))).resolves.toEqual({
+      status: "not_running",
+    });
+    await fixture.startForegroundRun();
+    fixture.session.pushEvent({
+      type: "turn_completed",
+      provider: "codex",
+      turnId: "reused-finalized-turn",
+    });
+    await waitForAgentLifecycle(fixture.manager, fixture.agentId, "idle");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("a provider terminal for a reused finalized turn id settles the rebound run", async () => {
+  const fixture = await createControlledInterruptFixture({
+    name: "interrupt-finalized-real-terminal",
+    agentId: "00000000-0000-4000-8000-000000000308",
+    turnId: "real-terminal-turn",
+    interrupt: async () => {
+      // Acknowledge the interrupt but never settle the turn.
+    },
+  });
+
+  try {
+    await fixture.startForegroundRun();
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "settled",
+    });
+
+    fixture.session.pushEvent({
+      type: "turn_started",
+      provider: "codex",
+      turnId: "real-terminal-turn",
+    });
+    await waitForAgentLifecycle(fixture.manager, fixture.agentId, "running");
+
+    // The provider's REAL terminal for the rebound turn id must be processed,
+    // not dropped as a duplicate of the finalized turn.
+    fixture.session.pushEvent({
+      type: "turn_completed",
+      provider: "codex",
+      turnId: "real-terminal-turn",
+    });
+    await waitForAgentLifecycle(fixture.manager, fixture.agentId, "idle");
+    expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+    });
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "not_running",
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("cancelAgentRun interrupts the provider with the active turn id", async () => {
+  const fixture = await createControlledInterruptFixture({
+    name: "interrupt-with-turn-id",
+    agentId: "00000000-0000-4000-8000-000000000309",
+    turnId: "targeted-interrupt-turn",
+    interrupt: async (session) => {
+      session.pushEvent({
+        type: "turn_canceled",
+        provider: session.provider,
+        turnId: session.turnId,
+      });
+    },
+  });
+
+  try {
+    await fixture.startForegroundRun();
+
+    await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+      status: "settled",
+    });
+    expect(fixture.session.interruptCalled).toBe(true);
+    expect(fixture.session.interruptOptions).toEqual({ turnId: "targeted-interrupt-turn" });
   } finally {
     await fixture.cleanup();
   }

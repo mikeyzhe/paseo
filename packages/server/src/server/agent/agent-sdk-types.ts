@@ -688,9 +688,15 @@ export interface AgentSession {
   /**
    * Resolve once every foreground turn that predates this call can no longer run or become active.
    * Calling while already idle is a successful no-op. Reject only when foreground ownership is
-   * still uncertain.
+   * still uncertain. `turnId`, when provided, targets that specific provider turn.
    */
-  interrupt(): Promise<void>;
+  interrupt(options?: { turnId?: string }): Promise<void>;
+  /**
+   * Force the provider runtime for this session into the runtime-failed state: the provider
+   * host is released and the session goes stale, so the next prompt reloads/resumes it.
+   * Used when an acknowledged interrupt fails to settle a turn.
+   */
+  terminateRuntime?(): Promise<void>;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
   listCommands?(): Promise<AgentSlashCommand[]>;
