@@ -68,6 +68,7 @@ function controlResponse(frame) {
   }
   if (process.env.MUSE_TEST_HANG === frame.method) return true;
   if (dedupeReplayResponse(frame)) return true;
+  if (interruptEchoResponse(frame)) return true;
   if (frame.method === "session/setReasoningEffort") {
     respond(frame, { status: "accepted", commandId: frame.params.commandId });
     return true;
@@ -323,6 +324,26 @@ function workflowResponse(frame) {
   return false;
 }
 
+// Echo interrupt: acknowledge turn/interrupt for whatever turnId was requested
+// and confirm it with a cancelled terminal carrying that exact id, so a
+// daemon-targeted interrupt of an untracked turn still completes.
+function interruptEchoResponse(frame) {
+  if (process.env.MUSE_TEST_INTERRUPT_ECHO !== "1" || frame.method !== "turn/interrupt")
+    return false;
+  respond(frame, { status: "accepted", turnId: frame.params.turnId });
+  send({
+    jsonrpc: "2.0",
+    method: "turn/completed",
+    params: {
+      sessionId: frame.params.sessionId,
+      turnId: frame.params.turnId,
+      terminal: "cancelled",
+      viewCursor: "v:interrupt-echo:1",
+    },
+  });
+  return true;
+}
+
 function queuedResponse(frame) {
   if (
     process.env.MUSE_TEST_QUEUE &&
@@ -334,6 +355,22 @@ function queuedResponse(frame) {
       disposition: "queued",
       startedNewTurn: false,
     });
+    // Optionally complete the queued turn after a delay, exercising terminals
+    // for turns that never emitted turn/started.
+    if (process.env.MUSE_TEST_QUEUE_TERMINAL === "1") {
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: {
+            sessionId: frame.params.sessionId,
+            turnId: frame.params.commandId,
+            terminal: "completed",
+            viewCursor: "v:queue-terminal:1",
+          },
+        });
+      }, 25);
+    }
     return true;
   }
   return false;

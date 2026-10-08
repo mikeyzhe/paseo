@@ -159,7 +159,7 @@ function connect(
         await session.answer(input.permissionId, input.response);
         return;
       case "session.interrupt":
-        await session.interrupt();
+        await session.interrupt(input.turnId);
         break;
       case "session.close":
         await session.close();

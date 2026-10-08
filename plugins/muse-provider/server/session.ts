@@ -76,7 +76,7 @@ export class Session {
   // the exact text the daemon must echo so HomeTool's user-echo envelope match
   // stamps client_send_id/provenance onto the turn card.
   private readonly echoTexts = new Map<string, string>();
-  private readonly turns = new Map<string, "active" | "completed">();
+  private readonly turns = new Map<string, "queued" | "active" | "completed">();
   private notifications: Promise<void> = Promise.resolve();
   private readonly buffered: Notification[] = [];
   private opening = true;
@@ -406,9 +406,12 @@ export class Session {
       );
     }
     this.firstTurn = false;
-    if (response.disposition === "started" && this.turns.get(response.turnId) !== "completed")
-      this.turns.set(response.turnId, "active");
-    this.live().recovery.activity(undefined, this.activeTurnIds().length > 0);
+    // Track every turn Muse admits for us — started, queued, or steered. A queued
+    // turn's terminal (or its unqueued/retracted reclaim) must still reach the
+    // daemon, or the daemon-side run bound to it never settles.
+    if (this.turns.get(response.turnId) !== "completed")
+      this.turns.set(response.turnId, response.disposition === "queued" ? "queued" : "active");
+    this.live().recovery.activity(undefined, this.unfinishedTurnIds().length > 0);
     const type = response.disposition === "steered" ? "steer" : "turn";
     this.options.emit({
       type: "session.prompt_result",
@@ -539,12 +542,16 @@ export class Session {
   async readUsage() {
     return this.host.request("usage/read", {}, usageSchema);
   }
-  async interrupt(): Promise<void> {
-    const turnId = this.activeTurnIds().at(-1);
-    if (!turnId) return;
+  async interrupt(turnId?: string): Promise<void> {
+    // Prefer the daemon-supplied turnId so the interrupt reaches the exact turn
+    // the daemon is canceling, even when this session never tracked it (a busy
+    // or queued Muse left it untracked). Without one, target the latest turn
+    // that actually started running.
+    const target = turnId ?? this.runningTurnIds().at(-1);
+    if (!target) return;
     let timer: ReturnType<typeof setTimeout>;
     const completion = new Promise<void>((resolve, reject) => {
-      this.interruptCompletion = { turnId, resolve, reject };
+      this.interruptCompletion = { turnId: target, resolve, reject };
       timer = setTimeout(() => {
         this.runtimeFailed(
           new MuseError(
@@ -557,7 +564,11 @@ export class Session {
     });
     try {
       await Promise.all([
-        this.host.command("turn/interrupt", { sessionId: this.live().nativeId, turnId }, ackSchema),
+        this.host.command(
+          "turn/interrupt",
+          { sessionId: this.live().nativeId, turnId: target },
+          ackSchema,
+        ),
         completion,
       ]);
     } finally {
@@ -594,7 +605,7 @@ export class Session {
       return;
     }
     await this.processNotification(notification);
-    this.live().recovery.activity(envelope.viewCursor, this.activeTurnIds().length > 0);
+    this.live().recovery.activity(envelope.viewCursor, this.unfinishedTurnIds().length > 0);
     if (envelope.viewCursor) {
       this.cursor = envelope.viewCursor;
       this.publishPersistence();
@@ -652,6 +663,10 @@ export class Session {
       case "turn/completed":
         this.completeTurn(notification.params);
         break;
+      case "turn/unqueued":
+      case "turn/retracted":
+        this.cancelTrackedTurn(notification.params);
+        break;
       case "session/tokenUsage": {
         const params = tokenUsageSchema.parse(notification.params);
         this.options.emit({
@@ -695,45 +710,67 @@ export class Session {
       });
     }
   }
-  private activeTurnIds(): string[] {
+  private unfinishedTurnIds(): string[] {
+    return [...this.turns].filter(([, state]) => state !== "completed").map(([id]) => id);
+  }
+  private runningTurnIds(): string[] {
     return [...this.turns].filter(([, state]) => state === "active").map(([id]) => id);
   }
   private completeTurn(input: unknown): void {
     const params = turnSchema.parse(input);
-    if (this.turns.get(params.turnId) !== "active") return;
-    this.turns.set(params.turnId, "completed");
-    let state: "completed" | "canceled" | "failed" = "completed";
-    let error;
-    if (params.terminal === "cancelled") state = "canceled";
-    else if (params.error || params.terminal === "failed") {
-      state = "failed";
-      error = params.error
-        ? actionableError(
-            new MuseError(params.error.kind, params.error.message),
-            this.options.launch,
-          )
-        : { message: "Muse turn failed" };
+    const tracked = this.turns.get(params.turnId);
+    if (tracked !== undefined && tracked !== "completed") {
+      this.turns.set(params.turnId, "completed");
+      let state: "completed" | "canceled" | "failed" = "completed";
+      let error;
+      if (params.terminal === "cancelled") state = "canceled";
+      else if (params.error || params.terminal === "failed") {
+        state = "failed";
+        error = params.error
+          ? actionableError(
+              new MuseError(params.error.kind, params.error.message),
+              this.options.launch,
+            )
+          : { message: "Muse turn failed" };
+      }
+      this.options.emit({
+        type: "session.turn",
+        sessionId: this.options.id,
+        turnId: params.turnId,
+        state,
+        error,
+      });
+      // HOTFIX (2026-10-05, fleet-local): Muse #79 — a run terminal that failed
+      // with an event-log/MCP-audit fault poisoned only the host process;
+      // replace it and resume. Muse re-runs the pending failed turn itself
+      // after resume, so the prompt is NOT resubmitted (that would duplicate
+      // it); the failed turn above already surfaced to Paseo unchanged. Remove
+      // when Paseo ships a fix.
+      if (state === "failed" && params.error && isMuseRuntimeFault(params.error.message)) {
+        // Deliberately not awaited: recovery drains this.notifications, and this
+        // runs inside the notification chain — awaiting here would deadlock.
+        const faultError = new MuseError(params.error.kind, params.error.message);
+        void this.recoverRuntimeFault(faultError, false).catch(() => {});
+      }
     }
+    // The host confirmed this turn is over even when we never tracked it (e.g. an
+    // interrupt that targeted a daemon-supplied turnId): release the waiter.
+    if (this.interruptCompletion?.turnId === params.turnId) this.interruptCompletion.resolve();
+  }
+
+  /** A queued turn Muse reclaimed (turn/unqueued) or retracted (turn/retracted) never runs. */
+  private cancelTrackedTurn(input: unknown): void {
+    const params = turnSchema.parse(input);
+    const tracked = this.turns.get(params.turnId);
+    if (tracked === undefined || tracked === "completed") return;
+    this.turns.set(params.turnId, "completed");
     this.options.emit({
       type: "session.turn",
       sessionId: this.options.id,
       turnId: params.turnId,
-      state,
-      error,
+      state: "canceled",
     });
     if (this.interruptCompletion?.turnId === params.turnId) this.interruptCompletion.resolve();
-    // HOTFIX (2026-10-05, fleet-local): Muse #79 — a run terminal that failed
-    // with an event-log/MCP-audit fault poisoned only the host process;
-    // replace it and resume. Muse re-runs the pending failed turn itself
-    // after resume, so the prompt is NOT resubmitted (that would duplicate
-    // it); the failed turn above already surfaced to Paseo unchanged. Remove
-    // when Paseo ships a fix.
-    if (state === "failed" && params.error && isMuseRuntimeFault(params.error.message)) {
-      // Deliberately not awaited: recovery drains this.notifications, and this
-      // runs inside the notification chain — awaiting here would deadlock.
-      const faultError = new MuseError(params.error.kind, params.error.message);
-      void this.recoverRuntimeFault(faultError, false).catch(() => {});
-    }
   }
 
   private async fold(item: WireItem): Promise<void> {
