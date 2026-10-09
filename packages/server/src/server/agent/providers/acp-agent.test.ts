@@ -3000,6 +3000,8 @@ describe("ACPAgentSession", () => {
     expect(events.some((event) => event.type === "turn_canceled")).toBe(false);
     expect(internals.activeForegroundTurnId).toBe(turnId);
     await expect(session.startTurn("next")).rejects.toThrow("A foreground turn is already active");
+    const busy: unknown = await session.startTurn("next").catch((error: unknown) => error);
+    expect(busy).toMatchObject({ code: "turn_active" });
 
     resolvePrompt({ stopReason: "cancelled", usage: { outputTokens: 0 } });
     await Promise.resolve();

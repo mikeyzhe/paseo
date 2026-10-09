@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { TurnActiveError } from "../agent/dispatch-error-code.js";
 import type {
   AgentCapabilityFlags,
   AgentClient,
@@ -435,7 +436,7 @@ class FakeAgentSession implements AgentSession {
 
   async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
     if (this.activeForegroundTurnId) {
-      throw new Error("A foreground turn is already active");
+      throw new TurnActiveError();
     }
 
     const turnId = `fake-turn-${this.nextTurnOrdinal++}`;

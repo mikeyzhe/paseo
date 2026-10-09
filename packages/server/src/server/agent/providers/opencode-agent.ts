@@ -1,4 +1,5 @@
 import { validateProviderOptions } from "../provider-options.js";
+import { TurnActiveError } from "../dispatch-error-code.js";
 import {
   createOpencodeClient,
   type AssistantMessage as OpenCodeAssistantMessage,
@@ -3866,7 +3867,7 @@ class OpenCodeAgentSession implements AgentSession {
       throw new Error("OpenCode session is closed");
     }
     if (this.turnState.status === "running") {
-      throw new Error("A foreground turn is already active");
+      throw new TurnActiveError();
     }
     await this.reconnectIfServerExited();
     try {

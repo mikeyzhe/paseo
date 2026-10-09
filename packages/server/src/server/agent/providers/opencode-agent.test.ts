@@ -5010,6 +5010,10 @@ describe("OpenCode provider subagent contract", () => {
       await expect(parent.startTurn("Continue from Paseo")).rejects.toThrow(
         "A foreground turn is already active",
       );
+      const busy: unknown = await parent
+        .startTurn("Continue from Paseo")
+        .catch((error: unknown) => error);
+      expect(busy).toMatchObject({ code: "turn_active" });
       expect(openCode.calls.sessionAbort).toEqual([]);
       expect(openCode.calls.sessionPromptAsync).toEqual([]);
     } finally {

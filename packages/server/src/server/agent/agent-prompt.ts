@@ -36,7 +36,7 @@ export interface StartAgentRunOptions {
   reusableClaim?: boolean;
 }
 
-export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
+export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started" | "replaced";
 
 async function steerOrReplaceActiveRun(
   agentManager: AgentRunController,
@@ -46,7 +46,7 @@ async function steerOrReplaceActiveRun(
 ): Promise<
   | { disposition: "steered" }
   | {
-      disposition: "turn_started";
+      disposition: "replaced";
       iterator: AsyncGenerator<import("./agent-sdk-types.js").AgentStreamEvent>;
     }
   | null
@@ -62,7 +62,7 @@ async function steerOrReplaceActiveRun(
     return { disposition: "steered" };
   }
   if (result.status === "replaced") {
-    return { disposition: "turn_started", iterator: result.iterator };
+    return { disposition: "replaced", iterator: result.iterator };
   }
   return null;
 }
@@ -200,7 +200,7 @@ async function startAgentRunInner(
     options,
     iterator,
   );
-  return { disposition: "turn_started" };
+  return { disposition: replaced ? "replaced" : "turn_started" };
 }
 
 function drainAgentRunIteratorInBackground(

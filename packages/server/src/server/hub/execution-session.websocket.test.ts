@@ -120,6 +120,7 @@ test("ordinary Hub create and message retries do not duplicate agents or prompts
       status: "agent_created",
       requestId: "create-first",
       agentId: expect.any(String),
+      disposition: "created",
       agent: expect.objectContaining({
         id: expect.any(String),
         workspaceId: expect.any(String),
@@ -139,6 +140,7 @@ test("ordinary Hub create and message retries do not duplicate agents or prompts
       status: "agent_created",
       requestId: "create-duplicate",
       agentId,
+      disposition: "created",
       agent: first.payload.agent,
     },
   });
@@ -165,7 +167,13 @@ test("ordinary Hub create and message retries do not duplicate agents or prompts
   };
   expect(await hub.requestOrdinary({ ...message, requestId: "message-first" })).toEqual({
     type: "send_agent_message_response",
-    payload: { requestId: "message-first", agentId, accepted: true, error: null },
+    payload: {
+      requestId: "message-first",
+      agentId,
+      accepted: true,
+      error: null,
+      disposition: "turn_started",
+    },
   });
   expect(await hub.requestOrdinary({ ...message, requestId: "message-duplicate" })).toEqual({
     type: "send_agent_message_response",
@@ -180,6 +188,28 @@ test("ordinary Hub create and message retries do not duplicate agents or prompts
   expect(
     await hub.requestOrdinary({ ...message, text: "changed", requestId: "message-conflict" }),
   ).toMatchObject({ payload: { accepted: false } });
+});
+
+test("ordinary Hub message to a missing agent carries code agent_missing", async () => {
+  const hub = await launchRelationship();
+  expect(
+    await hub.requestOrdinary({
+      type: "send_agent_message_request",
+      requestId: "message-missing-agent",
+      agentId: "agent-that-does-not-exist",
+      messageId: "missing-agent-arrival",
+      text: "hello",
+    }),
+  ).toEqual({
+    type: "send_agent_message_response",
+    payload: {
+      requestId: "message-missing-agent",
+      agentId: "agent-that-does-not-exist",
+      accepted: false,
+      error: "Agent not found: agent-that-does-not-exist",
+      code: "agent_missing",
+    },
+  });
 });
 
 test("ordinary Hub requests survive daemon restart and restore an archived workspace", async () => {
