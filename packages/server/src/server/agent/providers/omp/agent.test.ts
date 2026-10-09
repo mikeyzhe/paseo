@@ -503,6 +503,16 @@ describe("OMP agent client and session", () => {
     ]);
   });
 
+  test("a concurrent turn fails with the coded busy guard", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    const session = omp.requireSession();
+    await session.startTurn("first");
+    await expect(session.startTurn("second")).rejects.toThrow("An OMP turn is already active");
+    const busy: unknown = await session.startTurn("third").catch((error: unknown) => error);
+    expect(busy).toMatchObject({ code: "turn_active" });
+  });
+
   test("reports a rejected steer as unavailable", async () => {
     const omp = new OmpHarness();
     await omp.start();

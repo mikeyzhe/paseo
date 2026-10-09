@@ -1,4 +1,5 @@
 import { mapCustomMessageToToolCall } from "../custom-message.js";
+import { TurnActiveError } from "../../dispatch-error-code.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -852,7 +853,7 @@ export class OmpAgentSession implements AgentSession {
 
   async startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<StartTurnResult> {
     if (this.activeTurnId) {
-      throw new Error("An OMP turn is already active");
+      throw new TurnActiveError("An OMP turn is already active");
     }
 
     const payload = convertPromptInput(prompt, { model: this.state.model });

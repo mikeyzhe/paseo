@@ -1183,6 +1183,10 @@ describe("PiRpcAgentSession", () => {
     await expect(session.startTurn("overlapping request")).rejects.toThrow(
       "A Pi turn is already active",
     );
+    const busy: unknown = await session
+      .startTurn("another overlapping request")
+      .catch((error: unknown) => error);
+    expect(busy).toMatchObject({ code: "turn_active" });
   });
 
   test("treats Pi's aborted terminal response as cancellation after an interrupt", async () => {
