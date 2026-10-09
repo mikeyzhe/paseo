@@ -33,7 +33,7 @@ export interface StartAgentRunOptions {
   clearPendingPermissions?: boolean;
 }
 
-export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
+export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started" | "replaced";
 
 async function steerOrReplaceActiveRun(
   agentManager: AgentRunController,
@@ -43,7 +43,7 @@ async function steerOrReplaceActiveRun(
 ): Promise<
   | { disposition: "steered" }
   | {
-      disposition: "turn_started";
+      disposition: "replaced";
       iterator: AsyncGenerator<import("./agent-sdk-types.js").AgentStreamEvent>;
     }
   | null
@@ -59,7 +59,7 @@ async function steerOrReplaceActiveRun(
     return { disposition: "steered" };
   }
   if (result.status === "replaced") {
-    return { disposition: "turn_started", iterator: result.iterator };
+    return { disposition: "replaced", iterator: result.iterator };
   }
   return null;
 }
@@ -153,7 +153,29 @@ async function startAgentRunInner(
     },
     "agent.session.start_stream.iterator_returned",
   );
-  options?.onDispatch?.("turn_started");
+  const disposition: PromptDispatchDisposition = replaced ? "replaced" : "turn_started";
+  options?.onDispatch?.(disposition);
+  drainAgentRunIteratorInBackground(
+    agentManager,
+    agentId,
+    prompt,
+    snapshot,
+    logger,
+    options,
+    iterator,
+  );
+  return { disposition };
+}
+
+function drainAgentRunIteratorInBackground(
+  agentManager: AgentRunController,
+  agentId: string,
+  prompt: AgentPromptInput,
+  snapshot: ManagedAgent | null,
+  logger: Logger,
+  options: StartAgentRunOptions | undefined,
+  iterator: AsyncGenerator<import("./agent-sdk-types.js").AgentStreamEvent>,
+): void {
   void (async () => {
     try {
       try {
@@ -189,7 +211,6 @@ async function startAgentRunInner(
       logger.error({ err: error, agentId }, "Agent stream failed");
     }
   })();
-  return { disposition: "turn_started" };
 }
 
 /**

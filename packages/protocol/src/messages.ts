@@ -5120,6 +5120,21 @@ export const WorkspaceMarkUnreadResponseSchema = z.object({
   }),
 });
 
+export const SendAgentMessageDispositionSchema = z.enum([
+  "turn_started",
+  "steered",
+  "replaced",
+  "out_of_band",
+]);
+export type SendAgentMessageDisposition = z.infer<typeof SendAgentMessageDispositionSchema>;
+
+export const SendAgentMessageErrorCodeSchema = z.enum([
+  "turn_active",
+  "agent_missing",
+  "stale_session",
+]);
+export type SendAgentMessageErrorCode = z.infer<typeof SendAgentMessageErrorCodeSchema>;
+
 export const SendAgentMessageResponseMessageSchema = z.object({
   type: z.literal("send_agent_message_response"),
   payload: z.object({
@@ -5128,6 +5143,8 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     accepted: z.boolean(),
     deliveryStatus: z.literal("queued").optional(),
     error: z.string().nullable(),
+    disposition: SendAgentMessageDispositionSchema.optional(),
+    code: SendAgentMessageErrorCodeSchema.optional(),
   }),
 });
 
