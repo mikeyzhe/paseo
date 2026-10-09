@@ -60,7 +60,9 @@ import {
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
   unarchiveAgentState,
+  type PromptDispatchDisposition,
 } from "./agent/agent-prompt.js";
+import { sendAgentMessageErrorCode } from "./agent/dispatch-error-code.js";
 import {
   resolveCreateAgentTitles,
   resolveFirstAgentPromptTitle,
@@ -8105,6 +8107,7 @@ export class Session {
           agentId: msg.agentId,
           accepted: false,
           error: resolved.error,
+          code: resolved.notFound ? "agent_missing" : undefined,
         },
       });
       return;
@@ -8123,6 +8126,7 @@ export class Session {
         },
         "agent.session.send_agent_message",
       );
+      let disposition: PromptDispatchDisposition | undefined;
       const send = async () => {
         const result = await sendPromptToAgent({
           agentManager: this.agentManager,
@@ -8134,7 +8138,8 @@ export class Session {
           clearPendingPermissions: true,
           logger: this.sessionLogger,
         });
-        if (result.disposition === "turn_started") {
+        disposition = result.disposition;
+        if (result.disposition === "turn_started" || result.disposition === "replaced") {
           await waitForAgentRunStartWithTimeout(
             this.agentManager,
             agentId,
@@ -8163,6 +8168,7 @@ export class Session {
           agentId,
           accepted: true,
           error: null,
+          disposition,
         },
       });
     } catch (error) {
@@ -8175,6 +8181,7 @@ export class Session {
           agentId: resolved.agentId,
           accepted: false,
           error: errorToFriendlyMessage(error),
+          code: sendAgentMessageErrorCode(error) ?? undefined,
         },
       });
     }

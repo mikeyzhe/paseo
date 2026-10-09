@@ -223,6 +223,22 @@ function deferred<T>() {
 }
 
 describe("Codex active-turn steering admission", () => {
+  test("a concurrent turn fails with the coded busy guard", async () => {
+    const appServer = createFakeCodexAppServer();
+    const { session } = await startPublicSteeringSession(appServer);
+    try {
+      await expect(session.startTurn("second")).rejects.toThrow(
+        "A foreground turn is already active",
+      );
+      const busy: unknown = await session.startTurn("third").catch((error: unknown) => error);
+      expect(busy).toMatchObject({ code: "turn_active" });
+      await session.close();
+      appServer.assertNoErrors();
+    } finally {
+      await session.close().catch(() => undefined);
+    }
+  });
+
   test("a steer without the clearing contract leaves permissions open", async () => {
     const appServer = createFakeCodexAppServer({
       "turn/steer": () => ({ turn: { id: "native-A" } }),

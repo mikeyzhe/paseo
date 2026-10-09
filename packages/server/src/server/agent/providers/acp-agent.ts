@@ -1,4 +1,5 @@
 import { ACPProviderOptionsSchema } from "./acp-options.js";
+import { TurnActiveError } from "../dispatch-error-code.js";
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -1921,7 +1922,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       throw new Error(`${this.provider} session is not initialized`);
     }
     if (this.activeForegroundTurnId) {
-      throw new Error("A foreground turn is already active");
+      throw new TurnActiveError();
     }
 
     this.deliverTranslatedEvents(this.flushPendingUserMessage());
