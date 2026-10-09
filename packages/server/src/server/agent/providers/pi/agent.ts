@@ -1,4 +1,5 @@
 import { mapCustomMessageToToolCall } from "../custom-message.js";
+import { TurnActiveError } from "../../dispatch-error-code.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -1277,7 +1278,7 @@ export class PiRpcAgentSession implements AgentSession {
 
   async startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<StartTurnResult> {
     if (this.activeTurnId) {
-      throw new Error("A Pi turn is already active");
+      throw new TurnActiveError("A Pi turn is already active");
     }
 
     const turnId = randomUUID();
