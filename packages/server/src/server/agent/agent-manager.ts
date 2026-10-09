@@ -3076,9 +3076,17 @@ export class AgentManager {
       agentId,
       interruptTurnId ?? undefined,
     );
+    // The settlement budget is the session's own when it advertises one: a
+    // provider that winds down in-flight work after acknowledging cancel (ACP
+    // tool calls settling after session/cancel) needs longer than the
+    // interrupt-ack default before "canceled" is truthful. Until the real
+    // terminal lands the run stays tracked, so new prompts keep hitting the
+    // manager's busy gate instead of the provider's still-active turn.
+    const settlementTimeoutMs =
+      agent.session.cancelSettlementTimeoutMs ?? this.rescueTimeouts.interruptSessionMs;
     const settlement = await this.waitWithTimeout({
       operation: run.settledPromise,
-      timeoutMs: this.rescueTimeouts.interruptSessionMs,
+      timeoutMs: settlementTimeoutMs,
     });
 
     if (!interruptAcknowledged) {
