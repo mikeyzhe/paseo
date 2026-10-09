@@ -18,7 +18,11 @@ import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
 import { projectTimelineRows } from "./timeline-projection.js";
 import { getOpenAgentTabLabel, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
+import {
+  formatSystemNotificationPrompt,
+  startAgentRun,
+  type PromptDispatchDisposition,
+} from "./agent-prompt.js";
 import { StaleProviderSessionError } from "./stale-provider-session-error.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent-loading.js";
 import type { StoredAgentRecord } from "./agent-storage.js";
@@ -638,7 +642,12 @@ class UnsupportedSteeringSession extends TestAgentSession {
 async function startAndSteerThroughManager(
   session: AgentSession,
   behavior: "steer" | "interrupt" = "steer",
-): Promise<{ manager: AgentManager; agentId: string; workdir: string }> {
+): Promise<{
+  manager: AgentManager;
+  agentId: string;
+  workdir: string;
+  disposition: PromptDispatchDisposition;
+}> {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-dispatch-"));
   const client = new (class extends TestAgentClient {
     override async createSession(): Promise<AgentSession> {
@@ -655,12 +664,12 @@ async function startAndSteerThroughManager(
     }
   })();
   await manager.waitForAgentRunStart(agent.id);
-  await startAgentRun(manager, agent.id, "replacement", logger, {
+  const { disposition } = await startAgentRun(manager, agent.id, "replacement", logger, {
     replaceRunning: true,
     activeTurnBehavior: behavior,
     runOptions: { clientMessageId: "replacement-client" },
   });
-  return { manager, agentId: agent.id, workdir };
+  return { manager, agentId: agent.id, workdir, disposition };
 }
 
 test("uses an injected timeline store without making it a production requirement", async () => {
@@ -870,6 +879,62 @@ test("retries provider history hydration after a stream failure", async () => {
     });
   } finally {
     if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("dispatch disposition reports turn_started for a fresh turn", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-disposition-fresh-"));
+  const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
+  const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  try {
+    const { disposition } = await startAgentRun(manager, agent.id, "hello", logger, {
+      replaceRunning: true,
+    });
+    expect(disposition).toBe("turn_started");
+  } finally {
+    await manager.closeAgent(agent.id);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("dispatch disposition reports steered when the provider steers", async () => {
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const { manager, agentId, workdir, disposition } = await startAndSteerThroughManager(session);
+  try {
+    expect(session.steerCount).toBe(1);
+    expect(disposition).toBe("steered");
+  } finally {
+    await manager.closeAgent(agentId);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("dispatch disposition reports replaced when the provider cannot steer", async () => {
+  const session = new UnsupportedSteeringSession({ provider: "codex", cwd: process.cwd() });
+  const { manager, agentId, workdir, disposition } = await startAndSteerThroughManager(session);
+  try {
+    expect(session.interruptCount).toBe(1);
+    expect(disposition).toBe("replaced");
+  } finally {
+    await manager.closeAgent(agentId);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("dispatch disposition reports replaced for an interrupt of a live turn", async () => {
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const { manager, agentId, workdir, disposition } = await startAndSteerThroughManager(
+    session,
+    "interrupt",
+  );
+  try {
+    expect(session.interruptCount).toBe(1);
+    expect(disposition).toBe("replaced");
+  } finally {
+    await manager.closeAgent(agentId);
     rmSync(workdir, { recursive: true, force: true });
   }
 });
@@ -4415,7 +4480,7 @@ test("a replacement prompt recovers when the retired session fails to start", as
     const dispatch = await startAgentRun(manager, created.id, "replacement", logger, {
       replaceRunning: true,
     });
-    expect(dispatch.disposition).toBe("turn_started");
+    expect(dispatch.disposition).toBe("replaced");
     await replacement.waitForRetryStart();
     const result = await manager.waitForAgentEvent(created.id);
     expect(result.status).toBe("idle");

@@ -661,6 +661,25 @@ describe("ClaudeAgentSession features", () => {
     return { queryFactory, queryMock, launches };
   }
 
+  test("a concurrent turn fails with the coded busy guard", async () => {
+    const { queryFactory } = createQueryMock();
+    const session = await new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    }).createSession({ provider: "claude", cwd: process.cwd(), modeId: "default" });
+    try {
+      await session.startTurn("first turn");
+      await expect(session.startTurn("second turn")).rejects.toThrow(
+        "A foreground turn is already active",
+      );
+      const busy: unknown = await session.startTurn("third turn").catch((error: unknown) => error);
+      expect(busy).toMatchObject({ code: "turn_active" });
+    } finally {
+      await session.close();
+    }
+  });
+
   test("publishes a resolution when the SDK aborts a permission callback", async () => {
     const { queryFactory } = createQueryMock();
     const session = await new ClaudeAgentClient({

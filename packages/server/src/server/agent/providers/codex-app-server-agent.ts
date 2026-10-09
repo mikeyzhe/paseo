@@ -1,4 +1,5 @@
 import { validateProviderOptions } from "../provider-options.js";
+import { TurnActiveError } from "../dispatch-error-code.js";
 import {
   getAgentStreamEventTurnId,
   type AgentPermissionAction,
@@ -4351,7 +4352,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     options?: AgentRunOptions,
   ): Promise<{ turnId: string }> {
     if (this.activeForegroundTurnId || this.pendingForegroundStart) {
-      throw new Error("A foreground turn is already active");
+      throw new TurnActiveError();
     }
 
     let resolveStart!: () => void;
