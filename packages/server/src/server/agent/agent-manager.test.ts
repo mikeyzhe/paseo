@@ -1360,6 +1360,7 @@ class McpCapableTestAgentClient extends TestAgentClient {
 class ControlledInterruptSession extends TestAgentSession {
   interruptCalled = false;
   interruptOptions: { turnId?: string } | undefined;
+  cancelSettlementTimeoutMs?: number;
 
   constructor(
     config: AgentSessionConfig,
@@ -1396,6 +1397,7 @@ async function createControlledInterruptFixture(options: {
   agentId: string;
   turnId: string;
   interrupt: (session: ControlledInterruptSession) => Promise<void>;
+  cancelSettlementTimeoutMs?: number;
 }): Promise<ControlledInterruptFixture> {
   const workdir = mkdtempSync(join(tmpdir(), `agent-manager-${options.name}-`));
   const session = new ControlledInterruptSession(
@@ -1403,6 +1405,9 @@ async function createControlledInterruptFixture(options: {
     options.turnId,
     options.interrupt,
   );
+  if (options.cancelSettlementTimeoutMs !== undefined) {
+    session.cancelSettlementTimeoutMs = options.cancelSettlementTimeoutMs;
+  }
   const client = new (class extends TestAgentClient {
     override async createSession(): Promise<AgentSession> {
       return session;
@@ -2908,6 +2913,135 @@ test("cancelAgentRun interrupts the provider with the active turn id", async () 
     expect(fixture.session.interruptCalled).toBe(true);
     expect(fixture.session.interruptOptions).toEqual({ turnId: "targeted-interrupt-turn" });
   } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("cancelAgentRun waits for the provider terminal up to the session cancel-settlement budget", async () => {
+  // Live failure (2026-10-09, hermes via the ACP adapter): the manager gave up
+  // after its default budget while the provider was still winding down
+  // in-flight tool calls, reported the agent idle with a synthetic
+  // turn_canceled, and every follow-up prompt bounced off the provider's
+  // still-active turn with "A foreground turn is already active". Sessions
+  // whose providers wind down after acknowledging cancel advertise a longer
+  // budget; the run must stay busy until the REAL terminal lands.
+  let resolvePrompt!: () => void;
+  const promptSettled = new Promise<void>((resolve) => {
+    resolvePrompt = resolve;
+  });
+  const fixture = await createControlledInterruptFixture({
+    name: "cancel-settlement-budget",
+    agentId: "00000000-0000-4000-8000-000000000310",
+    turnId: "slow-wind-down-turn",
+    cancelSettlementTimeoutMs: 500,
+    interrupt: async (session) => {
+      // Acknowledge fast (like an ACP session/cancel RPC); the real terminal
+      // lands only when the in-flight prompt request resolves.
+      void (async () => {
+        await promptSettled;
+        session.pushEvent({
+          type: "turn_canceled",
+          provider: session.provider,
+          reason: "Interrupted",
+          turnId: session.turnId,
+        });
+      })();
+    },
+  });
+
+  try {
+    await fixture.startForegroundRun();
+    const canceledEvents: AgentStreamEvent[] = [];
+    const promptResolvedAtCancel: boolean[] = [];
+    let promptResolved = false;
+    const unsubscribe = fixture.manager.subscribe(
+      (event) => {
+        if (event.type === "agent_stream" && event.event.type === "turn_canceled") {
+          canceledEvents.push(event.event);
+          promptResolvedAtCancel.push(promptResolved);
+        }
+      },
+      { replayState: false },
+    );
+    try {
+      const cancel = fixture.manager.cancelAgentRun(fixture.agentId);
+      // Past the 10ms manager default, inside the 500ms session budget: the
+      // run must still be busy — no terminal, lifecycle running, and new
+      // prompts rejected at the manager gate rather than inside the provider.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(canceledEvents).toHaveLength(0);
+      expect(fixture.manager.getAgent(fixture.agentId)?.lifecycle).toBe("running");
+      expect(() => fixture.manager.streamAgent(fixture.agentId, "next prompt")).toThrow(
+        "already has an active run",
+      );
+
+      promptResolved = true;
+      resolvePrompt();
+      await expect(cancel).resolves.toEqual({ status: "settled" });
+      expect(canceledEvents).toHaveLength(1);
+      expect(promptResolvedAtCancel).toEqual([true]);
+      expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+        lifecycle: "idle",
+        activeForegroundTurnId: null,
+      });
+
+      // The next prompt starts cleanly: daemon and provider agree the turn is over.
+      await fixture.startForegroundRun();
+      fixture.session.pushEvent({
+        type: "turn_completed",
+        provider: "codex",
+        turnId: "slow-wind-down-turn",
+      });
+      await waitForAgentLifecycle(fixture.manager, fixture.agentId, "idle");
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("cancelAgentRun force-settles with a synthetic cancel when the session budget expires", async () => {
+  const fixture = await createControlledInterruptFixture({
+    name: "cancel-settlement-budget-timeout",
+    agentId: "00000000-0000-4000-8000-000000000311",
+    turnId: "never-settling-turn",
+    cancelSettlementTimeoutMs: 30,
+    interrupt: async () => {
+      // Acknowledge the interrupt but never settle the turn.
+    },
+  });
+
+  const warnSpy = vi.spyOn(logger, "warn");
+  try {
+    await fixture.startForegroundRun();
+    const canceledEvents: AgentStreamEvent[] = [];
+    const unsubscribe = fixture.manager.subscribe(
+      (event) => {
+        if (event.type === "agent_stream" && event.event.type === "turn_canceled") {
+          canceledEvents.push(event.event);
+        }
+      },
+      { replayState: false },
+    );
+    try {
+      await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
+        status: "settled",
+      });
+      expect(canceledEvents).toHaveLength(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: fixture.agentId }),
+        expect.stringContaining("force-canceling"),
+      );
+      expect(fixture.manager.getAgent(fixture.agentId)).toMatchObject({
+        lifecycle: "idle",
+        activeForegroundTurnId: null,
+      });
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    warnSpy.mockRestore();
     await fixture.cleanup();
   }
 });

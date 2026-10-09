@@ -697,6 +697,15 @@ export interface AgentSession {
    * Used when an acknowledged interrupt fails to settle a turn.
    */
   terminateRuntime?(): Promise<void>;
+  /**
+   * Upper bound (ms) cancelAgentRun waits for this session's terminal event after an
+   * acknowledged interrupt before force-settling with a synthetic turn_canceled.
+   * Sessions whose providers wind down in-flight work after acknowledging cancel
+   * (e.g. ACP tool calls settling after session/cancel) set this above the manager
+   * default so "canceled" is only reported once the provider has actually released
+   * the turn. When absent, the manager's interruptSessionMs budget applies.
+   */
+  cancelSettlementTimeoutMs?: number;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
   listCommands?(): Promise<AgentSlashCommand[]>;
