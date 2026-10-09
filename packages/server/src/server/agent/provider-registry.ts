@@ -468,6 +468,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     describePersistence: () => mapPersistenceHandle(provider, inner.describePersistence()),
     interrupt: (options) => inner.interrupt(options),
     terminateRuntime: inner.terminateRuntime?.bind(inner),
+    cancelSettlementTimeoutMs: inner.cancelSettlementTimeoutMs,
     close: () => inner.close(),
     listCommands: inner.listCommands?.bind(inner),
     setModel: inner.setModel?.bind(inner),

@@ -304,6 +304,13 @@ const ACP_DIAGNOSTIC_PHASE_TIMEOUT_MS = 20_000;
 const ACP_PROBE_CLOSE_TIMEOUT_MS = 2_000;
 const ACP_IMPORT_HISTORY_LOAD_TIMEOUT_MS = 30_000;
 const ACP_IMPORT_HISTORY_BUDGET_MS = 60_000;
+// How long cancelAgentRun waits for an ACP turn's real terminal after the
+// provider acknowledges session/cancel. The prompt request only resolves once
+// in-flight tool calls settle, which routinely outlasts the manager's 2s
+// interrupt-ack default (2026-10-09 hermes incident: 4 parallel tool calls
+// took ~5s to settle after cancel). Past this budget the manager force-settles
+// with a synthetic turn_canceled and logs.
+export const ACP_CANCEL_SETTLEMENT_TIMEOUT_MS = 30_000;
 
 function summarizeMalformedACPStdoutError(error: unknown): { type: string; message: string } {
   return {
@@ -1763,6 +1770,11 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
   get id(): string | null {
     return this.sessionId;
+  }
+
+  /** Wind-down budget for cancelAgentRun: see ACP_CANCEL_SETTLEMENT_TIMEOUT_MS. */
+  get cancelSettlementTimeoutMs(): number {
+    return ACP_CANCEL_SETTLEMENT_TIMEOUT_MS;
   }
 
   async initializeNewSession(): Promise<void> {

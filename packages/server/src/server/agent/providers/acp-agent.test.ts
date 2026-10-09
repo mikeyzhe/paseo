@@ -22,6 +22,7 @@ import {
 import {
   ACPAgentClient,
   ACPAgentSession,
+  ACP_CANCEL_SETTLEMENT_TIMEOUT_MS,
   type SpawnedACPProcess,
   type SessionStateResponse,
   buildACPClientCapabilities,
@@ -94,7 +95,10 @@ describe("buildACPClientCapabilities", () => {
 
 interface ACPSessionInternals {
   sessionId: string | null;
-  connection: { prompt: (...args: unknown[]) => Promise<PromptResponse> };
+  connection: {
+    prompt: (...args: unknown[]) => Promise<PromptResponse>;
+    cancel?: (...args: unknown[]) => Promise<unknown>;
+  };
   activeForegroundTurnId: string | null;
   configOptions: SessionConfigOption[];
   translateSessionUpdate(update: SessionUpdate): AgentStreamEvent[];
@@ -2962,6 +2966,56 @@ describe("ACPAgentSession", () => {
       turnId,
     });
     expect(asInternals<ACPSessionInternals>(session).activeForegroundTurnId).toBeNull();
+  });
+
+  test("interrupt holds the foreground turn until the in-flight prompt resolves as cancelled", async () => {
+    const session = createSession();
+    const events: AgentStreamEvent[] = [];
+    let resolvePrompt!: (value: PromptResponse) => void;
+    const prompt = vi.fn(
+      () =>
+        new Promise<PromptResponse>((resolve) => {
+          resolvePrompt = resolve;
+        }),
+    );
+    const cancel = vi.fn(async () => ({}));
+
+    const internals = asInternals<ACPSessionInternals>(session);
+    internals.sessionId = "session-1";
+    internals.connection = { prompt, cancel };
+    session.subscribe((event) => {
+      events.push(event);
+    });
+
+    const { turnId } = await session.startTurn("hello");
+    await session.interrupt();
+
+    expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" });
+    // The provider acknowledged cancel but the in-flight prompt has not
+    // resolved: no terminal yet, and the turn stays guarded until it does.
+    expect(events.some((event) => event.type === "turn_canceled")).toBe(false);
+    expect(internals.activeForegroundTurnId).toBe(turnId);
+    await expect(session.startTurn("next")).rejects.toThrow("A foreground turn is already active");
+
+    resolvePrompt({ stopReason: "cancelled", usage: { outputTokens: 0 } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events.find((event) => event.type === "turn_canceled")).toMatchObject({
+      type: "turn_canceled",
+      turnId,
+    });
+    expect(internals.activeForegroundTurnId).toBeNull();
+  });
+
+  test("ACP sessions advertise a cancel-settlement budget above the manager default", async () => {
+    // cancelAgentRun waits this long for the real terminal after an
+    // acknowledged interrupt; without it the manager's 2s default fires while
+    // tool calls are still winding down and reports a turn as canceled before
+    // the provider has released it.
+    const session = createSession();
+    expect(session.cancelSettlementTimeoutMs).toBe(ACP_CANCEL_SETTLEMENT_TIMEOUT_MS);
+    expect(ACP_CANCEL_SETTLEMENT_TIMEOUT_MS).toBeGreaterThan(2_000);
   });
 
   test("startTurn emits the submitted user message even when ACP does not echo it", async () => {
