@@ -113,7 +113,12 @@ export class MspConnection {
     this.exitListeners.add(listener);
     return () => this.exitListeners.delete(listener);
   }
-  async command<T, P extends object>(method: string, params: P, schema: z.ZodType<T>): Promise<T> {
+  async command<T, P extends object>(
+    method: string,
+    params: P,
+    schema: z.ZodType<T>,
+    timeoutMs?: number,
+  ): Promise<T> {
     const id =
       "commandId" in params && typeof params.commandId === "string"
         ? params.commandId
@@ -121,7 +126,7 @@ export class MspConnection {
     const input = { ...params, commandId: id };
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.request(method, input, schema);
+        return await this.request(method, input, schema, timeoutMs);
       } catch (error) {
         const retryable =
           error instanceof MuseError && ["overloaded", "backpressured"].includes(error.kind);

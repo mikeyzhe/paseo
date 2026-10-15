@@ -1345,6 +1345,9 @@ for (const variant of ["tool", "dedicated", "workflow"]) {
   test(`${variant} subagent opens only the supplied child and pages its real transcript`, async () => {
     const h = await harness("subagent", { MUSE_TEST_CHILD: variant });
     await h.open();
+    expect(
+      await h.wait((e) => e.type === "session.opened" && e.sessionId === "paseo-session"),
+    ).toMatchObject({ capabilities: expect.arrayContaining(["session.subsession"]) });
     await h.prompt();
     expect(
       await h.wait((e) => e.type === "session.opened" && e.sessionId === "fixture-child"),
