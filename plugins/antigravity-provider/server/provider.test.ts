@@ -355,6 +355,22 @@ it("maps subagent steps to a tool carrying the child conversation ID", async () 
   );
 });
 
+it("completes turns that recover from an earlier error_message step and still fails unrecovered result errors", async () => {
+  const h = await harness();
+  await h.open();
+  const recovered = await h.completed(await h.prompt("RECOVERED_ERROR"));
+  expect(recovered).toMatchObject({ type: "session.turn", state: "completed" });
+  expect(
+    (await h.records()).filter((entry) => entry.args?.includes("--input-format")),
+  ).toHaveLength(1);
+  const failed = await h.completed(await h.prompt("FATAL_ERROR"));
+  expect(failed).toMatchObject({
+    type: "session.turn",
+    state: "failed",
+    error: { message: 'stream input message is missing the "event" field' },
+  });
+});
+
 it.each(["HANG", "TOOL_HANG"])(
   "interrupts %s, settles canceled, and respawns the same conversation",
   async (text) => {
