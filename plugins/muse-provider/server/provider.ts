@@ -25,6 +25,7 @@ const capabilities = [
   "prompt.steer",
   "session.configure",
   "session.persistence",
+  "session.subsession",
   "permission",
   "session.list",
 ] as const;
