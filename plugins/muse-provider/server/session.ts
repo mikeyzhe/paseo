@@ -222,6 +222,9 @@ export class Session {
       "session/resume",
       { sessionId, cursor, config: this.mcpServersParam() },
       sessionSchema,
+      // Large preserved histories can take several minutes to load. Keep
+      // other RPC deadlines short; only resume gets this bounded budget.
+      300_000,
     );
   }
 
