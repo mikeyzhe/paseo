@@ -26,6 +26,9 @@ interface Turn {
   usageSteps: Set<number>;
   tools: Map<string, Extract<ProviderTimelineItem, { type: "tool_call" }>>;
   usage: Required<Pick<ProviderUsage, "inputTokens" | "outputTokens" | "cachedInputTokens">>;
+  lastStepIndex: number | null;
+  lastCompletedResponseIndex: number | null;
+  lastErrorStepIndex: number | null;
 }
 type State =
   | { type: "dormant" }
@@ -94,6 +97,9 @@ export class Session {
       usageSteps: new Set(),
       tools: new Map(),
       usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+      lastStepIndex: null,
+      lastCompletedResponseIndex: null,
+      lastErrorStepIndex: null,
     };
     this.state = { type: "running", driver, turn };
     this.emit({
@@ -259,7 +265,7 @@ export class Session {
         },
       });
     }
-    if (result.status === "ERROR") {
+    if (result.status === "ERROR" && !hasRecoveredFromStepError(result, turn)) {
       const canceled = result.error === "interrupted";
       this.finishTools(turn, canceled ? "canceled" : "failed");
       this.retire(driver);
@@ -283,23 +289,39 @@ export class Session {
   }
 
   private acceptStep(step: Step, turn: Turn): void {
+    turn.lastStepIndex =
+      turn.lastStepIndex === null ? step.step_index : Math.max(turn.lastStepIndex, step.step_index);
+    if (step.step_type === "error_message" || step.state === "ERROR") {
+      turn.lastErrorStepIndex =
+        turn.lastErrorStepIndex === null
+          ? step.step_index
+          : Math.max(turn.lastErrorStepIndex, step.step_index);
+    }
     const id = `${turn.id}:${step.step_index}`;
     if (step.step_type === "agent_response") {
       const previous = turn.text.get(step.step_index) || "";
       const text = previous + step.text_delta;
       turn.text.set(step.step_index, text);
       if (step.text_delta) this.item({ type: "assistant_message", id, messageId: id, text });
-      if (step.state === "DONE" && step.usage && !turn.usageSteps.has(step.step_index)) {
-        turn.usageSteps.add(step.step_index);
-        turn.usage.inputTokens += step.usage.input_tokens;
-        turn.usage.outputTokens += step.usage.output_tokens;
-        turn.usage.cachedInputTokens += step.usage.cache_read_tokens;
-        this.emit({
-          type: "session.usage",
-          sessionId: this.options.id,
-          turnId: turn.id,
-          usage: { ...turn.usage },
-        });
+      if (step.state === "DONE") {
+        if (text.trim().length > 0) {
+          turn.lastCompletedResponseIndex =
+            turn.lastCompletedResponseIndex === null
+              ? step.step_index
+              : Math.max(turn.lastCompletedResponseIndex, step.step_index);
+        }
+        if (step.usage && !turn.usageSteps.has(step.step_index)) {
+          turn.usageSteps.add(step.step_index);
+          turn.usage.inputTokens += step.usage.input_tokens;
+          turn.usage.outputTokens += step.usage.output_tokens;
+          turn.usage.cachedInputTokens += step.usage.cache_read_tokens;
+          this.emit({
+            type: "session.usage",
+            sessionId: this.options.id,
+            turnId: turn.id,
+            usage: { ...turn.usage },
+          });
+        }
       }
     } else if (step.step_type === "tool" || step.step_type === "subagent") {
       const item = toolItem(step, id);
@@ -371,6 +393,29 @@ export class Session {
   private emit(event: ProviderEvent): void {
     this.options.emit(event);
   }
+}
+
+// Native results derive status/error by scanning the full trajectory for any historical
+// ERROR_MESSAGE step, even when a later retry or follow-up turn completed with an agent_response.
+function hasRecoveredFromStepError(
+  result: Extract<Frame, { event: "result" }>["result"],
+  turn: Turn,
+): boolean {
+  if (
+    result.error === "interrupted" ||
+    result.error.startsWith("the connection to the agent was interrupted")
+  ) {
+    return false;
+  }
+  if (turn.lastCompletedResponseIndex === null || turn.lastStepIndex === null) {
+    return false;
+  }
+  if (turn.lastCompletedResponseIndex < turn.lastStepIndex) {
+    return false;
+  }
+  return (
+    turn.lastErrorStepIndex === null || turn.lastCompletedResponseIndex > turn.lastErrorStepIndex
+  );
 }
 
 // Native results contain every denial since this driver started, including repeated actions.
