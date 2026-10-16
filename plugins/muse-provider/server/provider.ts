@@ -127,7 +127,7 @@ function connect(
         launch,
         emit,
         capabilities: negotiated,
-        serveArgs: serveArgs(input.config.providerOptions),
+        serveArgs: serveArgs(input.config.providerOptions, input.config.model),
       });
       sessions.set(input.sessionId, session);
       try {
