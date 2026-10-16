@@ -14,6 +14,7 @@ import type {
 import type { z } from "zod";
 import { MspConnection, commandId, type Notification } from "./connection.js";
 import { MuseError, actionableError, isMuseRuntimeFault } from "./errors.js";
+import { withServeModel } from "./options.js";
 import { Timeline, todoItem } from "./timeline.js";
 import { modes, efforts, presentCatalog } from "./catalog.js";
 import {
@@ -499,6 +500,13 @@ export class Session {
         ackSchema,
       );
       this.config = { ...this.config, model: changes.model };
+      // Keep future host spawns (fault recovery, daemon restart) on the new
+      // model — otherwise the next reattach re-stamps metadata with the stale
+      // host default. No respawn here: setModel already moved the live session.
+      this.hostOptions.serveArgs = withServeModel(
+        this.hostOptions.serveArgs ?? this.options.serveArgs,
+        changes.model,
+      );
     }
     // Muse receives configured thinking effort on each turn/start, rather than a session mutation.
     if (changes.thinkingOption !== undefined) {

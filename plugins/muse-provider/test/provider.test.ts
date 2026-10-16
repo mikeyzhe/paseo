@@ -1420,6 +1420,8 @@ test("default launch disables sandbox and trusts workspace", async () => {
     "proxy-only",
     "--disable-sandbox",
     "--trust-workspace",
+    "--model",
+    "meta/muse-spark-1.3",
   ]);
 });
 test.each([
@@ -1443,6 +1445,8 @@ test.each([
   expect((await h.recorded()).find((f) => f.event === "hostStarted").args).toEqual([
     "serve",
     ...args,
+    "--model",
+    "meta/muse-spark-1.3",
   ]);
 });
 test.each([
@@ -1482,8 +1486,8 @@ test("resuming a session reapplies its provider options to the new host", async 
   await h.wait((e) => e.type === "session.ready", from);
   const frames = await h.recorded();
   expect(frames.filter((f) => f.event === "hostStarted").map((f) => f.args)).toEqual([
-    ["serve", "--sandbox-network", "restricted"],
-    ["serve", "--sandbox-network", "restricted"],
+    ["serve", "--sandbox-network", "restricted", "--model", "meta/muse-spark-1.3"],
+    ["serve", "--sandbox-network", "restricted", "--model", "meta/muse-spark-1.3"],
   ]);
   expect(frames.some((f) => f.method === "session/resume")).toBe(true);
 });
