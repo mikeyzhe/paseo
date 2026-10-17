@@ -4,6 +4,8 @@ const usage = z.object({
   input_tokens: z.number().nonnegative(),
   output_tokens: z.number().nonnegative(),
   cache_read_tokens: z.number().nonnegative().default(0),
+  thinking_tokens: z.number().nonnegative().default(0),
+  total_tokens: z.number().nonnegative().optional(),
 });
 const tool = z.object({
   name: z.string(),

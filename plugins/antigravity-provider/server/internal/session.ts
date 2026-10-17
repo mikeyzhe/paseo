@@ -12,7 +12,7 @@ import type {
   ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 import { startDriver, selection, type Driver } from "./process.js";
-import { validateSelection } from "./catalog.js";
+import { ANTIGRAVITY_CONTEXT_WINDOW_MAX_TOKENS, validateSelection } from "./catalog.js";
 import { PromptFiles } from "./prompt.js";
 import { toolItem } from "./timeline.js";
 import { AntigravityError, diagnostic, type Frame, type Step } from "./wire.js";
@@ -315,11 +315,21 @@ export class Session {
           turn.usage.inputTokens += step.usage.input_tokens;
           turn.usage.outputTokens += step.usage.output_tokens;
           turn.usage.cachedInputTokens += step.usage.cache_read_tokens;
+          const contextWindowUsedTokens =
+            step.usage.total_tokens ??
+            step.usage.input_tokens +
+              step.usage.output_tokens +
+              step.usage.cache_read_tokens +
+              step.usage.thinking_tokens;
           this.emit({
             type: "session.usage",
             sessionId: this.options.id,
             turnId: turn.id,
-            usage: { ...turn.usage },
+            usage: {
+              ...turn.usage,
+              contextWindowUsedTokens,
+              contextWindowMaxTokens: ANTIGRAVITY_CONTEXT_WINDOW_MAX_TOKENS,
+            },
           });
         }
       }
