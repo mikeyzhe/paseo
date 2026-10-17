@@ -330,7 +330,11 @@ it("accounts DONE generation usage once without adding cumulative results, inclu
   await h.completed(await h.prompt("RESUME"));
   expect(h.events.filter((event) => event.type === "session.usage")).toHaveLength(3);
   expect(h.events.findLast((event) => event.type === "session.usage")).toMatchObject({
-    usage: { inputTokens: 11815 },
+    usage: {
+      inputTokens: 11815,
+      contextWindowUsedTokens: 11827,
+      contextWindowMaxTokens: 1_000_000,
+    },
   });
 });
 
@@ -615,7 +619,11 @@ describe("discovery", () => {
       type: "catalog",
       catalog: {
         models: expect.arrayContaining([
-          { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
+          {
+            id: "gemini-3.8-flash-low",
+            label: "Gemini 3.8 Flash (Low)",
+            contextWindowMaxTokens: 1_000_000,
+          },
         ]),
         thinkingOptions: [],
         defaultMode: "full-access",

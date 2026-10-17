@@ -20,6 +20,8 @@ const modes: readonly ProviderMode[] = [
   },
 ];
 
+export const ANTIGRAVITY_CONTEXT_WINDOW_MAX_TOKENS = 1_000_000;
+
 export async function getCatalog(launch: ProviderLaunch, cwd?: string): Promise<ProviderCatalog> {
   const output = await probe({ launch, args: ["models"], cwd });
   const models: ProviderModel[] = [];
@@ -29,7 +31,11 @@ export async function getCatalog(launch: ProviderLaunch, cwd?: string): Promise<
       throw new AntigravityError("Invalid `agy models` output", "INVALID_CATALOG");
     if (models.some((model) => model.id === id))
       throw new AntigravityError(`Duplicate Antigravity model: ${id}`, "INVALID_CATALOG");
-    models.push({ id, label });
+    models.push({
+      id,
+      label,
+      contextWindowMaxTokens: ANTIGRAVITY_CONTEXT_WINDOW_MAX_TOKENS,
+    });
   }
   return { models, modes, thinkingOptions: [], defaultMode: "full-access" };
 }
