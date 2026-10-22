@@ -338,22 +338,92 @@ it("accounts DONE generation usage once without adding cumulative results, inclu
   });
 });
 
-it("maps subagent steps to a tool carrying the child conversation ID", async () => {
+it("maps subagent steps to a tool carrying the child conversation ID and opens a parent-scoped child session", async () => {
   const h = await harness();
   await h.open();
+  const childId = "b6f02329-7415-49a7-a9a9-1cd09e898d26";
+  const transcriptDir = path.join(
+    os.homedir(),
+    ".gemini",
+    "antigravity-cli",
+    "brain",
+    childId,
+    ".system_generated",
+    "logs",
+  );
+  temporary.push(path.join(os.homedir(), ".gemini", "antigravity-cli", "brain", childId));
+  await rm(transcriptDir, { recursive: true, force: true });
+  await import("node:fs/promises").then((fs) => fs.mkdir(transcriptDir, { recursive: true }));
+  await writeFile(
+    path.join(transcriptDir, "transcript.jsonl"),
+    [
+      JSON.stringify({
+        step_index: 1,
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-10-21T23:36:27Z",
+        tool_calls: [
+          {
+            name: "send_message",
+            args: { Message: '"Answered 4 in subagent."', Recipient: '"parent"' },
+          },
+        ],
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-10-21T23:36:48Z",
+        content: "2+2 = 4.",
+      }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
   await h.completed(await h.prompt("SUBAGENT"));
+  await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.sessionId === childId && event.state === "completed",
+  );
   expect(h.events).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         type: "timeline.item",
+        sessionId: "s",
         item: expect.objectContaining({
           name: "invoke_subagent",
           status: "completed",
           detail: expect.objectContaining({
             type: "sub_agent",
-            childSessionId: "b6f02329-7415-49a7-a9a9-1cd09e898d26",
+            childSessionId: childId,
           }),
         }),
+      }),
+      expect.objectContaining({
+        type: "session.opened",
+        sessionId: childId,
+        parentSessionId: "s",
+        restoration: "parent",
+        title: "Arithmetic Assistant",
+        description: "What is 2+2?",
+      }),
+      expect.objectContaining({
+        type: "timeline.item",
+        sessionId: childId,
+        item: expect.objectContaining({
+          type: "assistant_message",
+          text: "Answered 4 in subagent.",
+        }),
+      }),
+      expect.objectContaining({
+        type: "timeline.item",
+        sessionId: childId,
+        item: expect.objectContaining({
+          type: "assistant_message",
+          text: "2+2 = 4.",
+        }),
+      }),
+      expect.objectContaining({
+        type: "session.turn",
+        sessionId: childId,
+        state: "completed",
       }),
     ]),
   );
