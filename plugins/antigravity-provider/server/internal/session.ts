@@ -13,6 +13,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { startDriver, selection, type Driver } from "./process.js";
 import { ANTIGRAVITY_CONTEXT_WINDOW_MAX_TOKENS, validateSelection } from "./catalog.js";
+import { Children } from "./children.js";
 import { PromptFiles } from "./prompt.js";
 import { toolItem } from "./timeline.js";
 import { AntigravityError, diagnostic, type Frame, type Step } from "./wire.js";
@@ -53,6 +54,7 @@ export class Session {
   private firstMessage: boolean;
   private readonly promptFiles = new PromptFiles();
   private readonly reportedDenials = new Map<string, number>();
+  private readonly children: Children;
 
   constructor(private readonly options: SessionOptions) {
     this.config = { ...options.config, mode: options.config.mode ?? "full-access" };
@@ -60,6 +62,7 @@ export class Session {
       ? persistenceSchema.parse(options.persistence).data.conversationId
       : null;
     this.firstMessage = this.conversationId === null;
+    this.children = new Children(options.id, this.config.cwd, (event) => this.emit(event));
     validateSelection(this.config, options.catalog());
   }
 
@@ -156,6 +159,7 @@ export class Session {
     const { driver, turn } = this.state;
     this.state = { type: "stopping", driver };
     await driver.stop("interrupt");
+    await this.children.finishTurn("canceled");
     this.finishTools(turn, "canceled");
     this.emit({
       type: "session.turn",
@@ -173,6 +177,7 @@ export class Session {
       if (state.type !== "dormant" && state.type !== "closed") await state.driver.stop("close");
     } finally {
       await this.promptFiles.close();
+      this.children.close();
     }
     if (state.type === "running") {
       this.finishTools(state.turn, "canceled");
@@ -267,6 +272,7 @@ export class Session {
     }
     if (result.status === "ERROR" && !hasRecoveredFromStepError(result, turn)) {
       const canceled = result.error === "interrupted";
+      void this.children.finishTurn(canceled ? "canceled" : "failed");
       this.finishTools(turn, canceled ? "canceled" : "failed");
       this.retire(driver);
       this.emit({
@@ -277,6 +283,7 @@ export class Session {
         error: { message: diagnostic(result.error) },
       });
     } else {
+      void this.children.finishTurn("completed");
       this.finishTools(turn, "completed");
       this.state = { type: "idle", driver };
       this.emit({
@@ -334,9 +341,11 @@ export class Session {
         }
       }
     } else if (step.step_type === "tool" || step.step_type === "subagent") {
+      const previous = turn.tools.get(id);
       const item = toolItem(step, id);
       turn.tools.set(id, item);
       this.item(item);
+      this.children.observeStep(step, id, previous);
     }
   }
 
@@ -345,6 +354,7 @@ export class Session {
     if (state.type !== "running" && state.type !== "idle") return;
     this.retire(state.driver);
     if (state.type === "running") {
+      void this.children.finishTurn("failed");
       this.finishTools(state.turn, "failed");
       this.emit({
         type: "session.turn",
