@@ -633,6 +633,169 @@ describe("ScheduleService", () => {
     ]);
   });
 
+  // reuseAgent (Mike, 2026-10-27, FT3 "SSO watch"): an hourly schedule opened a new tab per fire,
+  // titled with the first 60 chars of its prompt. With a title and reuseAgent, every fire runs on the
+  // same tab while it is alive, a fresh one replaces it once archived, and a fire that lands while
+  // the previous turn is still working is skipped.
+  async function createReuseHarness() {
+    const deps = await createRegistryBackedScheduleWorkspaceDeps(tempDir);
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    return { manager, deps };
+  }
+
+  test("reuseAgent runs later fires on the previous agent while it is alive", async () => {
+    const { manager, deps } = await createReuseHarness();
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: deps.createDirectoryWorkspace,
+      archiveWorkspace: deps.createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      now: () => now,
+    });
+    const created = await service.create({
+      prompt: "SSO watch run - follow the my-work-sso skill",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: {
+          provider: "claude",
+          model: "test-model",
+          cwd: tempDir,
+          title: "SSO watch",
+          reuseAgent: true,
+        },
+      },
+      maxRuns: 3,
+    });
+
+    await service.tick();
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+    now = new Date("2026-01-01T00:02:00.000Z");
+    await service.tick();
+
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs.map((run) => run.status)).toEqual([
+      "succeeded",
+      "succeeded",
+      "succeeded",
+    ]);
+    const ids = new Set(inspected.runs.map((run) => run.agentId));
+    expect(ids.size).toBe(1);
+    const agent = await agentStorage.get(inspected.runs[0]!.agentId!);
+    expect(agent?.title).toBe("SSO watch");
+    expect(agent?.archivedAt ?? null).toBeNull();
+  });
+
+  test("reuseAgent creates a new agent once the previous one is archived", async () => {
+    const { manager, deps } = await createReuseHarness();
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: deps.createDirectoryWorkspace,
+      archiveWorkspace: deps.createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      now: () => now,
+    });
+    const created = await service.create({
+      prompt: "SSO watch run",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", model: "test-model", cwd: tempDir, reuseAgent: true },
+      },
+      maxRuns: 2,
+    });
+
+    await service.tick();
+    const first = (await service.inspect(created.id)).runs[0]!.agentId!;
+    const record = await agentStorage.get(first);
+    await agentStorage.upsert({ ...record!, archivedAt: "2026-01-01T00:00:30.000Z" });
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs[1]?.status).toBe("succeeded");
+    expect(inspected.runs[1]?.agentId).not.toBe(first);
+  });
+
+  test("reuseAgent skips a fire while the previous agent is still working", async () => {
+    const { manager, deps } = await createReuseHarness();
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      createDirectoryWorkspace: deps.createDirectoryWorkspace,
+      archiveWorkspace: deps.createArchiveWorkspace({ agentManager: manager, agentStorage }),
+      now: () => now,
+    });
+    const created = await service.create({
+      prompt: "SSO watch run",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", model: "test-model", cwd: tempDir, reuseAgent: true },
+      },
+      maxRuns: 3,
+    });
+
+    await service.tick();
+    const first = (await service.inspect(created.id)).runs[0]!.agentId!;
+    const inFlight = vi.spyOn(manager, "hasInFlightRun").mockImplementation((id) => id === first);
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.tick();
+    inFlight.mockRestore();
+
+    const inspected = await service.inspect(created.id);
+    expect(inspected.runs[1]).toMatchObject({ status: "failed", agentId: null });
+    expect(inspected.runs[1]?.error).toContain("Skipped");
+    expect(inspected.status).toBe("active");
+    expect((await agentStorage.list()).filter((a) => !a.archivedAt)).toHaveLength(1);
+
+    now = new Date("2026-01-01T00:02:00.000Z");
+    await service.tick();
+    const after = await service.inspect(created.id);
+    expect(after.runs[2]).toMatchObject({ status: "succeeded", agentId: first });
+  });
+
+  test("update patches title and reuseAgent on a new-agent schedule", async () => {
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async () => ({ agentId: null, output: "ok" }),
+    });
+    const created = await service.create({
+      prompt: "SSO watch run",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: tempDir } },
+    });
+    const updated = await service.update({
+      id: created.id,
+      newAgentConfig: { title: "SSO watch", reuseAgent: true },
+    });
+    expect(updated.target).toMatchObject({
+      type: "new-agent",
+      config: { title: "SSO watch", reuseAgent: true },
+    });
+    const reread = await service.inspect(created.id);
+    expect(reread.target).toMatchObject({ config: { title: "SSO watch", reuseAgent: true } });
+  });
+
   test("archiveOnFinish=true archives the run workspace through workspace archive", async () => {
     const {
       workspaceRegistry,

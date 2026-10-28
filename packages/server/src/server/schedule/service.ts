@@ -113,7 +113,25 @@ function applyNewAgentConfig(
   if (patch.isolation !== undefined) {
     config.isolation = patch.isolation;
   }
+  if (patch.title !== undefined) {
+    const trimmed = patch.title?.trim();
+    if (trimmed) {
+      config.title = trimmed;
+    } else {
+      delete config.title;
+    }
+  }
+  if (patch.reuseAgent !== undefined) {
+    config.reuseAgent = patch.reuseAgent;
+  }
   return { ...target, config };
+}
+
+/** A reused schedule agent must survive its run, so `reuseAgent` overrides `archiveOnFinish`. */
+function effectiveArchiveOnFinish(
+  config: Extract<ScheduleTarget, { type: "new-agent" }>["config"],
+): boolean | undefined {
+  return config.reuseAgent ? false : config.archiveOnFinish;
 }
 
 function normalizeMaxRuns(value: number | null | undefined): number | null {
@@ -608,7 +626,7 @@ export class ScheduleService {
           runningRun.workspaceId &&
           shouldArchiveScheduleRunWorkspace({
             agentId: runningRun.agentId,
-            archiveOnFinish: updated.target.config.archiveOnFinish,
+            archiveOnFinish: effectiveArchiveOnFinish(updated.target.config),
           })
         ) {
           interruptedWorkspaces.push({
@@ -833,49 +851,57 @@ export class ScheduleService {
     requireSchedule(updatedSchedule, params.scheduleId);
   }
 
+  private async executeAgentTargetSchedule(
+    schedule: StoredSchedule,
+    targetAgentId: string,
+    runId: string,
+  ): Promise<ScheduleExecutionResult> {
+    const wrappedPrompt = formatSystemNotificationPrompt(buildScheduleFireBody(schedule, runId));
+    const record = await this.agentStorage.get(targetAgentId);
+    if (!record) {
+      throw new ScheduleTargetGoneError(`Agent ${targetAgentId} no longer exists`);
+    }
+    if (record.archivedAt) {
+      throw new ScheduleTargetGoneError(`Agent ${targetAgentId} is archived`);
+    }
+
+    const agent = await ensureAgentLoaded(targetAgentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.logger,
+    });
+    if (this.agentManager.hasInFlightRun(agent.id)) {
+      throw new Error(`Agent ${agent.id} already has an active run`);
+    }
+    await startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
+      replaceRunning: true,
+      activeTurnBehavior: "steer",
+    });
+    const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
+      waitForActive: true,
+    });
+    if (waitResult.permission) {
+      throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
+    }
+    if (waitResult.status === "error") {
+      throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
+    }
+    return {
+      agentId: agent.id,
+      output: buildRunOutput({
+        output: null,
+        timelineText: "",
+        finalText: waitResult.lastMessage ?? "",
+      }),
+    };
+  }
+
   private async executeSchedule(
     schedule: StoredSchedule,
     runId: string,
   ): Promise<ScheduleExecutionResult> {
     if (schedule.target.type === "agent") {
-      const wrappedPrompt = formatSystemNotificationPrompt(buildScheduleFireBody(schedule, runId));
-      const record = await this.agentStorage.get(schedule.target.agentId);
-      if (!record) {
-        throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} no longer exists`);
-      }
-      if (record.archivedAt) {
-        throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} is archived`);
-      }
-
-      const agent = await ensureAgentLoaded(schedule.target.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.logger,
-      });
-      if (this.agentManager.hasInFlightRun(agent.id)) {
-        throw new Error(`Agent ${agent.id} already has an active run`);
-      }
-      await startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
-        replaceRunning: true,
-        activeTurnBehavior: "steer",
-      });
-      const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
-        waitForActive: true,
-      });
-      if (waitResult.permission) {
-        throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
-      }
-      if (waitResult.status === "error") {
-        throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
-      }
-      return {
-        agentId: agent.id,
-        output: buildRunOutput({
-          output: null,
-          timelineText: "",
-          finalText: waitResult.lastMessage ?? "",
-        }),
-      };
+      return this.executeAgentTargetSchedule(schedule, schedule.target.agentId, runId);
     }
 
     const config = schedule.target.type === "new-agent" ? schedule.target.config : null;
@@ -883,6 +909,12 @@ export class ScheduleService {
       throw new Error(`Schedule ${schedule.id} target changed during execution`);
     }
     await this.assertNewAgentCwdDirectory(config.cwd);
+    if (config.reuseAgent) {
+      const reused = await this.runOnPreviousScheduleAgent(schedule, runId);
+      if (reused) {
+        return reused;
+      }
+    }
     let workspace: PersistedWorkspaceRecord | null = null;
     let agentId: string | null = null;
     try {
@@ -949,7 +981,10 @@ export class ScheduleService {
     } finally {
       if (
         workspace &&
-        shouldArchiveScheduleRunWorkspace({ agentId, archiveOnFinish: config.archiveOnFinish })
+        shouldArchiveScheduleRunWorkspace({
+          agentId,
+          archiveOnFinish: effectiveArchiveOnFinish(config),
+        })
       ) {
         try {
           await this.archiveWorkspace(workspace.workspaceId);
@@ -967,6 +1002,75 @@ export class ScheduleService {
         }
       }
     }
+  }
+
+  /**
+   * `reuseAgent`: run this fire on the agent the latest earlier run used while it is still alive —
+   * it exists and is not archived (closing its tab archives it, and the next fire creates a new
+   * one). A fire that lands while that agent is still working is skipped, never stacked or
+   * steered into the live turn. Returns null when there is no reusable agent.
+   */
+  private async runOnPreviousScheduleAgent(
+    schedule: StoredSchedule,
+    runId: string,
+  ): Promise<ScheduleExecutionResult | null> {
+    const previous = schedule.runs
+      .toReversed()
+      .find((run) => run.id !== runId && run.agentId !== null);
+    if (!previous?.agentId) {
+      return null;
+    }
+    const record = await this.agentStorage.get(previous.agentId);
+    if (!record || record.archivedAt) {
+      return null;
+    }
+    const agent = await ensureAgentLoaded(previous.agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.logger,
+    });
+    if (this.agentManager.hasInFlightRun(agent.id)) {
+      throw new Error(`Skipped: the previous run's agent ${agent.id} is still working`);
+    }
+    await this.recordRunAgent({ scheduleId: schedule.id, runId, agentId: agent.id });
+    const result = await this.agentManager.runAgent(agent.id, schedule.prompt);
+    const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
+      waitForActive: true,
+    });
+    if (result.canceled) {
+      throw new Error(`Scheduled agent ${agent.id} was canceled`);
+    }
+    if (waitResult.permission) {
+      throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
+    }
+    if (waitResult.status === "error") {
+      throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
+    }
+    return {
+      agentId: agent.id,
+      output: buildRunOutput({
+        output: waitResult.lastMessage ?? null,
+        timelineText: curateAgentActivity(result.timeline),
+        finalText: result.finalText,
+      }),
+    };
+  }
+
+  /** Stamp a running run's agent without touching its workspace (the reuse path makes none). */
+  private async recordRunAgent(params: {
+    scheduleId: string;
+    runId: string;
+    agentId: string;
+  }): Promise<void> {
+    await this.store.update(params.scheduleId, (schedule) => ({
+      ...schedule,
+      updatedAt: this.now().toISOString(),
+      runs: schedule.runs.map((run) =>
+        run.id === params.runId && run.status === "running"
+          ? { ...run, agentId: params.agentId }
+          : run,
+      ),
+    }));
   }
 
   private async createScheduleRunWorkspace(

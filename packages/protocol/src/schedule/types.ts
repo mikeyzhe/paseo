@@ -33,6 +33,9 @@ export const ScheduleTargetSchema = z.discriminatedUnion("type", [
       archiveOnFinish: z.boolean().optional(),
       isolation: z.enum(["local", "worktree"]).optional(),
       title: z.string().trim().min(1).nullable().optional(),
+      // Reuse the previous run's agent while it is still alive (exists and not archived) instead of
+      // creating a new one each fire; a reused agent is never archived on finish.
+      reuseAgent: z.boolean().optional(),
       providerOptions: z.record(z.string(), z.unknown()).optional(),
       featureValues: z.record(z.string(), z.unknown()).optional(),
       systemPrompt: z.string().optional(),
@@ -96,6 +99,8 @@ export interface UpdateScheduleNewAgentConfig {
   archiveOnFinish?: boolean;
   isolation?: "local" | "worktree";
   cwd?: string;
+  title?: string | null;
+  reuseAgent?: boolean;
 }
 
 export interface UpdateScheduleInput {
