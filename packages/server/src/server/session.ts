@@ -1541,7 +1541,7 @@ export class Session {
 
   /** Mirror an archive performed outside this session (MCP tool, hub) to subscribers. */
   async emitAgentArchiveForExternalMutation(archived: ArchiveAgentResult): Promise<void> {
-    if (!this.agentUpdates.hasSubscription()) return;
+    if (!this.agentUpdates.hasSubscription() || !archived.record) return;
     const payload = await this.agentUpdates.emitStoredRecord(archived.record);
     if (payload.workspaceId) {
       await this.emitWorkspaceUpdateForWorkspaceId(payload.workspaceId);

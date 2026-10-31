@@ -1421,6 +1421,8 @@ test("session readiness accepts initialization beyond the old event polling wind
     "proxy-only",
     "--disable-sandbox",
     "--trust-workspace",
+    "--model",
+    "meta/muse-spark-1.3",
   ]);
 }, 10000);
 
