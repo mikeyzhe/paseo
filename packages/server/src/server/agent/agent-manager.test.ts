@@ -1537,6 +1537,77 @@ test("steers a tracked autonomous turn without creating a replacement run", asyn
   }
 });
 
+test("autonomous turn_started tracks a run and its terminal idles the agent", async () => {
+  // Contract the Muse host-turn adoption relies on: a provider turn outside
+  // any foreground run surfaces as an autonomous run, then idles on completion.
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-autonomous-lifecycle-"));
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  let agentId: string | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    session.pushEvent({ type: "turn_started", provider: "codex", turnId: "host-turn-1" });
+    await vi.waitFor(() => expect(manager.getAgent(agent.id)?.lifecycle).toBe("running"));
+    expect(manager.getAgent(agent.id)?.activeTurnId).toBe("host-turn-1");
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "host-turn-1" });
+    await vi.waitFor(() => expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle"));
+    expect(manager.getAgent(agent.id)?.activeTurnId).toBeNull();
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("autonomous turn beside a foreground run is dropped and cannot settle it", async () => {
+  // A host turn that starts while one of our turns is active: the daemon
+  // drops its turn_started, and its later terminal must not finalize or fail
+  // the foreground turn.
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-autonomous-concurrent-"));
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  let agentId: string | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    const run = manager.streamAgent(agent.id, "foreground work");
+    const consume = (async () => {
+      for await (const _ of run) {
+      }
+    })();
+    await manager.waitForAgentRunStart(agent.id);
+    expect(manager.getAgent(agent.id)?.activeForegroundTurnId).toBe("active-turn-1");
+    session.pushEvent({ type: "turn_started", provider: "codex", turnId: "host-turn-1" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(manager.getAgent(agent.id)?.activeForegroundTurnId).toBe("active-turn-1");
+    expect(manager.getAgent(agent.id)?.activeTurnId).toBe("active-turn-1");
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "host-turn-1" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(manager.getAgent(agent.id)?.lifecycle).toBe("running");
+    expect(manager.getAgent(agent.id)?.activeForegroundTurnId).toBe("active-turn-1");
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+    await consume;
+    await vi.waitFor(() => expect(manager.getAgent(agent.id)?.lifecycle).toBe("idle"));
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("isolated rewind falls back from steering to the normal replacement path", async () => {
   const session = new SteeringTestSession({ provider: "claude", cwd: process.cwd() });
   session.steerResult = "unavailable";

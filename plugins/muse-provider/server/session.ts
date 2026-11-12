@@ -82,6 +82,12 @@ export class Session {
   // stamps client_send_id/provenance onto the turn card.
   private readonly echoTexts = new Map<string, string>();
   private readonly turns = new Map<string, "queued" | "active" | "completed">();
+  // Host-initiated turns seen inside a replay batch (open-drain or gap
+  // backfill) whose terminal has not appeared yet. They surface via
+  // flushHostTurns() only if still open when the outermost batch drains, so a
+  // past started+completed pair never resurrects a run.
+  private readonly pendingHostTurns = new Set<string>();
+  private replayDepth = 0;
   private notifications: Promise<void> = Promise.resolve();
   private readonly buffered: Notification[] = [];
   private opening = true;
@@ -184,9 +190,7 @@ export class Session {
     await this.restorePending(response.pendingRequests);
     // Inline history precedes suffix events; replayed turn terminals do not own a fresh run.
     this.opening = false;
-    for (const notification of this.buffered) this.enqueue(notification);
-    this.buffered.length = 0;
-    await this.notifications;
+    await this.drainBuffered();
     await this.readCatalog();
     await this.live().commands.refresh();
     this.publishPersistence();
@@ -257,7 +261,7 @@ export class Session {
           this.notifications = this.notifications
             .then(async () => {
               const live = this.live();
-              await live.recovery.backfill();
+              await this.backfillReplay();
               return live.children.refresh();
             })
             .catch((error) => this.runtimeFailed(error));
@@ -321,9 +325,7 @@ export class Session {
       };
       await this.restorePending(response.pendingRequests).catch(benign("restorePending"));
       this.opening = false;
-      for (const notification of this.buffered) this.enqueue(notification);
-      this.buffered.length = 0;
-      await this.notifications;
+      await this.drainBuffered();
       await this.live().commands.refresh().catch(benign("commands.refresh"));
       this.publishPersistence();
       process.stderr.write(
@@ -613,6 +615,46 @@ export class Session {
       .then(() => this.notify(notification))
       .catch((error: unknown) => this.runtimeFailed(error));
   }
+  // Notifications buffered while opening can replay turns that already started
+  // AND finished in the past. Host-initiated turns inside the batch stay
+  // pending until the drain completes; only a still-open turn surfaces.
+  private async drainBuffered(): Promise<void> {
+    this.replayDepth++;
+    try {
+      for (const notification of this.buffered) this.enqueue(notification);
+      this.buffered.length = 0;
+      await this.notifications;
+    } finally {
+      this.replayDepth--;
+      this.flushHostTurns();
+    }
+  }
+  // Same rule as drainBuffered for gap backfill, which replays retained view
+  // events (a backfill nested inside an open-drain flushes only with the outer
+  // batch, via the depth counter).
+  private async backfillReplay(after?: string): Promise<void> {
+    this.replayDepth++;
+    try {
+      await this.live().recovery.backfill(after);
+    } finally {
+      this.replayDepth--;
+      this.flushHostTurns();
+    }
+  }
+  private flushHostTurns(): void {
+    if (this.replayDepth > 0) return;
+    for (const turnId of this.pendingHostTurns) {
+      this.pendingHostTurns.delete(turnId);
+      if (this.turns.has(turnId)) continue;
+      this.turns.set(turnId, "active");
+      this.options.emit({
+        type: "session.turn",
+        sessionId: this.options.id,
+        turnId,
+        state: "started",
+      });
+    }
+  }
   private runtimeFailed(error: unknown): void {
     this.live().recovery.close();
     this.options.emit({
@@ -640,7 +682,7 @@ export class Session {
     switch (notification.method) {
       case "view/gap":
         // The gap lower bound remains authoritative even if a later live event arrived first.
-        await this.live().recovery.backfill(gapSchema.parse(notification.params).after);
+        await this.backfillReplay(gapSchema.parse(notification.params).after);
         break;
       case "userInput/requested":
         this.live().questions.requested(notification.params);
@@ -733,7 +775,28 @@ export class Session {
         turnId: params.turnId,
         state: "started",
       });
+      return;
     }
+    if (params.commandId && this.messages.has(params.commandId)) return;
+    // Host-initiated turn (Muse started it on its own, e.g. to deliver a
+    // background task result): the commandId is absent or one we never sent.
+    // Adopt it so the daemon tracks an autonomous run — otherwise the agent
+    // reads idle while Muse works and no finish notification ever fires.
+    // Real wire (W1, 2026-11-12): turn/started carries a host-generated
+    // commandId equal to the turnId, items follow with that turnId, then a
+    // commandId-less turn/completed.
+    if (this.turns.has(params.turnId) || this.pendingHostTurns.has(params.turnId)) return;
+    if (this.replayDepth > 0) {
+      this.pendingHostTurns.add(params.turnId);
+      return;
+    }
+    this.turns.set(params.turnId, "active");
+    this.options.emit({
+      type: "session.turn",
+      sessionId: this.options.id,
+      turnId: params.turnId,
+      state: "started",
+    });
   }
   private unfinishedTurnIds(): string[] {
     return [...this.turns].filter(([, state]) => state !== "completed").map(([id]) => id);
@@ -743,6 +806,12 @@ export class Session {
   }
   private completeTurn(input: unknown): void {
     const params = turnSchema.parse(input);
+    if (this.pendingHostTurns.delete(params.turnId)) {
+      // Started and finished inside one replay batch: never surfaced, so its
+      // terminal stays silent too.
+      if (this.interruptCompletion?.turnId === params.turnId) this.interruptCompletion.resolve();
+      return;
+    }
     const tracked = this.turns.get(params.turnId);
     if (tracked !== undefined && tracked !== "completed") {
       this.turns.set(params.turnId, "completed");
@@ -786,6 +855,10 @@ export class Session {
   /** A queued turn Muse reclaimed (turn/unqueued) or retracted (turn/retracted) never runs. */
   private cancelTrackedTurn(input: unknown): void {
     const params = turnSchema.parse(input);
+    if (this.pendingHostTurns.delete(params.turnId)) {
+      if (this.interruptCompletion?.turnId === params.turnId) this.interruptCompletion.resolve();
+      return;
+    }
     const tracked = this.turns.get(params.turnId);
     if (tracked === undefined || tracked === "completed") return;
     this.turns.set(params.turnId, "completed");

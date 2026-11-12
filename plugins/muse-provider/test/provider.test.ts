@@ -2148,6 +2148,151 @@ test("readOutput timing out renders the edit without a diff and completes the tu
   );
 });
 
+const HOST_TURN_PAST = "host-turn-past-000000000001";
+const HOST_TURN_OPEN = "host-turn-open-000000000002";
+const HOST_TURN_LIVE = "host-turn-live-000000000003";
+const HOST_TURN_DOOMED = "host-turn-doomed-000000000004";
+
+test("host-initiated turn surfaces started then completed with its items", async () => {
+  // Live bug 2026-11-12 (W1): Muse self-started a delivery turn after a
+  // background workflow finished; the adapter dropped its turn/started (unknown
+  // commandId) and the agent read idle with no finish notification.
+  const h = await harness("text-reasoning", { MUSE_TEST_HOST_TURN: "completed" });
+  await h.open();
+  await h.prompt();
+  const started = await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.state === "started" && event.turnId === HOST_TURN_LIVE,
+  );
+  expect(started).toMatchObject({
+    type: "session.turn",
+    state: "started",
+    turnId: HOST_TURN_LIVE,
+  });
+  const terminal = await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.turnId === HOST_TURN_LIVE && event.state !== "started",
+  );
+  expect(terminal).toMatchObject({ state: "completed", turnId: HOST_TURN_LIVE });
+  expect(
+    h.events.filter((event) => event.type === "session.turn" && event.turnId === HOST_TURN_LIVE),
+  ).toHaveLength(2);
+  expect(h.events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: "timeline.item",
+        item: expect.objectContaining({ type: "assistant_message", text: "HOST_DELIVERY_OK" }),
+      }),
+    ]),
+  );
+});
+
+test("host-initiated turn surfaces the failed terminal", async () => {
+  const h = await harness("text-reasoning", { MUSE_TEST_HOST_TURN: "failed" });
+  await h.open();
+  await h.prompt();
+  await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.state === "started" && event.turnId === HOST_TURN_LIVE,
+  );
+  const terminal = await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.turnId === HOST_TURN_LIVE && event.state !== "started",
+  );
+  expect(terminal).toMatchObject({
+    state: "failed",
+    turnId: HOST_TURN_LIVE,
+    error: expect.objectContaining({ message: "host turn failed" }),
+  });
+});
+
+test("open drain swallows past host turns and surfaces a still-open one", async () => {
+  // Notifications buffered while opening can replay turns that already
+  // started AND finished: only the still-open host turn may surface, and it
+  // does so during the drain, before session.ready.
+  const h = await harness("text-reasoning", { MUSE_TEST_HOST_TURN_BUFFERED: "1" });
+  expect(await h.open()).toMatchObject({ type: "session.ready" });
+  for (const turnId of [HOST_TURN_PAST, HOST_TURN_DOOMED]) {
+    expect(
+      h.events.filter((event) => event.type === "session.turn" && event.turnId === turnId),
+    ).toEqual([]);
+  }
+  expect(
+    h.events.filter((event) => event.type === "session.turn" && event.turnId === HOST_TURN_OPEN),
+  ).toMatchObject([{ state: "started", turnId: HOST_TURN_OPEN }]);
+  const readyIndex = h.events.findIndex((event) => event.type === "session.ready");
+  const startedIndex = h.events.findIndex(
+    (event) => event.type === "session.turn" && event.turnId === HOST_TURN_OPEN,
+  );
+  expect(startedIndex).toBeGreaterThan(-1);
+  expect(startedIndex).toBeLessThan(readyIndex);
+  // The session still turns afterwards.
+  await h.prompt();
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+});
+
+test("gap backfill swallows a past host turn and surfaces a still-open one", async () => {
+  const h = await harness("text-reasoning", {
+    MUSE_TEST_GAP: "1",
+    MUSE_TEST_HOST_TURN_BACKFILL: "1",
+  });
+  await h.open();
+  await h.prompt();
+  await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.state === "started" && event.turnId === HOST_TURN_OPEN,
+  );
+  expect((await h.recorded()).filter((frame) => frame.method === "view/page")).toHaveLength(1);
+  expect(
+    h.events.filter((event) => event.type === "session.turn" && event.turnId === HOST_TURN_PAST),
+  ).toEqual([]);
+});
+
+test("interrupt with no turnId targets an adopted host turn running beside ours", async () => {
+  // A host turn concurrent with our foreground turn is still adopted and
+  // interruptible here; the daemon drops its autonomous turn_started while a
+  // foreground turn is active (see agent-manager autonomous tests).
+  const h = await harness("interrupt", {
+    MUSE_TEST_HOST_TURN_AFTER_STARTED: "open",
+    MUSE_TEST_INTERRUPT_ECHO: "1",
+  });
+  await h.open();
+  await h.prompt();
+  await h.wait(
+    (event) =>
+      event.type === "session.turn" && event.state === "started" && event.turnId === HOST_TURN_LIVE,
+  );
+  await h.send({
+    type: "session.interrupt",
+    sessionId: "paseo-session",
+    requestId: "interrupt-host",
+  });
+  const canceled = await h.wait(
+    (event) =>
+      event.type === "session.turn" &&
+      event.state === "canceled" &&
+      event.turnId === HOST_TURN_LIVE,
+  );
+  expect(canceled).toMatchObject({ state: "canceled", turnId: HOST_TURN_LIVE });
+  await h.wait(
+    (event) => event.type === "request.completed" && event.requestId === "interrupt-host",
+  );
+  const requests = await h.recorded();
+  expect(requests.find((frame) => frame.method === "turn/interrupt")?.params.turnId).toBe(
+    HOST_TURN_LIVE,
+  );
+  // Our own turn is still running: no terminal for it.
+  const ours = requests.find((frame) => frame.method === "turn/start");
+  expect(
+    h.events.filter(
+      (event) =>
+        event.type === "session.turn" &&
+        event.turnId === ours?.params.commandId &&
+        event.state !== "started",
+    ),
+  ).toEqual([]);
+});
+
 test("readOutput internal errors render the edit without a diff and complete the turn", async () => {
   // Flipped 2026-10-06: the edit-diff fetch is display-only, so even an
   // internal readOutput error must render the edit without a diff and

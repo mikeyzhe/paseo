@@ -78,24 +78,28 @@ function receiveFrame(line) {
     for (const row of terminalFirst) emitFixtureMessage(row.msg, recorded, frame);
     setTimeout(() => emitFixtureMessage(response.msg, recorded, frame), 50);
   } else for (const row of messages) emitFixtureMessage(row.msg, recorded, frame);
+  // Sent with the initialize response so the client reads them while the
+  // session/start round trip is still in flight (opening is true): they land
+  // in the open drain, like a resume suffix replay.
+  if (process.env.MUSE_TEST_HOST_TURN_BUFFERED && frame.method === "initialize") {
+    const sessionId = responseFor(rows, "session/start").session.sessionId;
+    sendHostTurn(sessionId, HOST_TURN_PAST, "completed");
+    sendHostTurn(sessionId, HOST_TURN_OPEN, null);
+    sendHostTurnStarted(sessionId, HOST_TURN_DOOMED);
+    send({
+      jsonrpc: "2.0",
+      method: "turn/unqueued",
+      params: {
+        sessionId,
+        turnId: HOST_TURN_DOOMED,
+        commandId: HOST_TURN_DOOMED,
+        viewCursor: "v:host:doomed:unqueued",
+      },
+    });
+  }
 }
 function controlResponse(frame) {
-  if (frame.method === "session/resume" && process.env.MUSE_TEST_HISTORY) {
-    const result = responseFor(readFixture("resume-without-cursor"), "session/resume");
-    result.session.sessionId = frame.params.sessionId;
-    result.history = frame.params.cursor
-      ? { mode: "none", noneReason: "cursorSuffix", items: null, snapshot: null }
-      : {
-          mode: "inline",
-          items: readFileSync(process.env.MUSE_TEST_HISTORY, "utf8")
-            .trim()
-            .split("\n")
-            .map((line) => JSON.parse(line)),
-          snapshot: null,
-        };
-    respond(frame, result);
-    return true;
-  }
+  if (resumeVariantResponse(frame)) return true;
   if (frame.method === "initialized") return true;
   if (frame.method === "initialize" && process.env.MUSE_TEST_EXIT) {
     process.stderr.write("diagnostic tail, not protocol\n");
@@ -127,11 +131,31 @@ function controlResponse(frame) {
     respond(frame, result);
     return true;
   }
+  if (runtimeFaultResponse(frame)) return true;
+  if (readOutputFaultResponse(frame)) return true;
+  return false;
+}
+function resumeVariantResponse(frame) {
+  if (frame.method === "session/resume" && process.env.MUSE_TEST_HISTORY) {
+    const result = responseFor(readFixture("resume-without-cursor"), "session/resume");
+    result.session.sessionId = frame.params.sessionId;
+    result.history = frame.params.cursor
+      ? { mode: "none", noneReason: "cursorSuffix", items: null, snapshot: null }
+      : {
+          mode: "inline",
+          items: readFileSync(process.env.MUSE_TEST_HISTORY, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line)),
+          snapshot: null,
+        };
+    respond(frame, result);
+    return true;
+  }
   if (frame.method === "session/resume" && process.env.MUSE_TEST_GONE) {
     rpcError(frame, -32020, "sessionNotFound", "missing");
     return true;
   }
-  if (runtimeFaultResponse(frame)) return true;
   if (frame.method === "session/resume" && process.env.MUSE_TEST_RUNTIME_FAULT) {
     // Recovery resume on scenarios whose fixture has no session/resume rows.
     // Echo the requested sessionId so later fixture messages still match the
@@ -141,7 +165,6 @@ function controlResponse(frame) {
     respond(frame, result);
     return true;
   }
-  if (readOutputFaultResponse(frame)) return true;
   return false;
 }
 // Real-muse parity: a same-commandId turn/start replays the recorded result
@@ -252,38 +275,7 @@ function readOutputFaultResponse(frame) {
 }
 function parityResponse(frame) {
   if (workflowResponse(frame)) return true;
-  if (frame.method === "view/page") {
-    let result;
-    if (process.env.MUSE_TEST_GAP || process.env.MUSE_TEST_SILENT) {
-      result = {
-        events: replace(
-          rows
-            .filter(
-              (row) =>
-                row.dir === "in" &&
-                row.msg.method &&
-                row.msg.params?.viewCursor &&
-                !row.msg.id &&
-                row.msg.method !== "item/delta",
-            )
-            .map((row) => ({ method: row.msg.method, params: row.msg.params })),
-        ),
-        nextCursor: null,
-      };
-    } else {
-      result = replace(
-        responseFor(
-          readFixture(
-            frame.params.sessionId === "fixture-child" ? "phase3-child-read" : "phase3-controls",
-          ),
-          "view/page",
-        ),
-      );
-      for (const event of result.events) event.params.sessionId = frame.params.sessionId;
-    }
-    respond(frame, result);
-    return true;
-  }
+  if (viewPageResponse(frame)) return true;
   if (frame.method === "session/read") {
     const result = responseFor(readFixture("phase3-child-read"), "session/read");
     result.session.sessionId = frame.params.sessionId;
@@ -368,6 +360,127 @@ function workflowResponse(frame) {
     return true;
   }
   return false;
+}
+
+function viewPageResponse(frame) {
+  if (frame.method !== "view/page") return false;
+  let result;
+  if (process.env.MUSE_TEST_HOST_TURN_BACKFILL) {
+    result = { events: hostBackfillEvents(frame.params.sessionId), nextCursor: null };
+  } else if (process.env.MUSE_TEST_GAP || process.env.MUSE_TEST_SILENT) {
+    result = {
+      events: replace(
+        rows
+          .filter(
+            (row) =>
+              row.dir === "in" &&
+              row.msg.method &&
+              row.msg.params?.viewCursor &&
+              !row.msg.id &&
+              row.msg.method !== "item/delta",
+          )
+          .map((row) => ({ method: row.msg.method, params: row.msg.params })),
+      ),
+      nextCursor: null,
+    };
+  } else {
+    result = replace(
+      responseFor(
+        readFixture(
+          frame.params.sessionId === "fixture-child" ? "phase3-child-read" : "phase3-controls",
+        ),
+        "view/page",
+      ),
+    );
+    for (const event of result.events) event.params.sessionId = frame.params.sessionId;
+  }
+  respond(frame, result);
+  return true;
+}
+
+// Host-initiated turns (verified against the real W1 session view, 2026-11-12):
+// turn/started carries a host-generated commandId equal to the turnId, items
+// follow with that turnId, then a commandId-less turn/completed.
+const HOST_TURN_PAST = "host-turn-past-000000000001";
+const HOST_TURN_OPEN = "host-turn-open-000000000002";
+const HOST_TURN_LIVE = "host-turn-live-000000000003";
+const HOST_TURN_DOOMED = "host-turn-doomed-000000000004";
+function sendHostTurnStarted(sessionId, turnId) {
+  send({
+    jsonrpc: "2.0",
+    method: "turn/started",
+    params: { sessionId, turnId, commandId: turnId, viewCursor: `v:host:${turnId}:started` },
+  });
+}
+function sendHostTurnItem(sessionId, turnId) {
+  send({
+    jsonrpc: "2.0",
+    method: "item/completed",
+    params: {
+      sessionId,
+      viewCursor: `v:host:${turnId}:item`,
+      item: {
+        itemId: `item-${turnId}`,
+        revision: 1,
+        kind: "agentMessage",
+        status: "completed",
+        turnId,
+        text: "HOST_DELIVERY_OK",
+      },
+    },
+  });
+}
+function sendHostTurnTerminal(sessionId, turnId, terminal) {
+  const params = { sessionId, turnId, terminal, viewCursor: `v:host:${turnId}:terminal` };
+  if (terminal === "failed") params.error = { kind: "hostFault", message: "host turn failed" };
+  send({ jsonrpc: "2.0", method: "turn/completed", params });
+}
+function sendHostTurn(sessionId, turnId, terminal) {
+  sendHostTurnStarted(sessionId, turnId);
+  sendHostTurnItem(sessionId, turnId);
+  if (terminal) sendHostTurnTerminal(sessionId, turnId, terminal);
+}
+function afterStartedHostTurn(message, frame) {
+  if (
+    process.env.MUSE_TEST_HOST_TURN_AFTER_STARTED &&
+    message.method === "turn/started" &&
+    frame.method === "turn/start"
+  ) {
+    const open = process.env.MUSE_TEST_HOST_TURN_AFTER_STARTED === "open";
+    sendHostTurn(message.params.sessionId, HOST_TURN_LIVE, open ? null : "completed");
+  }
+}
+function hostBackfillEvents(sessionId) {
+  const started = (turnId) => ({
+    method: "turn/started",
+    params: { sessionId, turnId, commandId: turnId, viewCursor: `v:host:${turnId}:started` },
+  });
+  const item = (turnId) => ({
+    method: "item/completed",
+    params: {
+      sessionId,
+      viewCursor: `v:host:${turnId}:item`,
+      item: {
+        itemId: `item-${turnId}`,
+        revision: 1,
+        kind: "agentMessage",
+        status: "completed",
+        turnId,
+        text: "HOST_DELIVERY_OK",
+      },
+    },
+  });
+  const terminal = (turnId) => ({
+    method: "turn/completed",
+    params: { sessionId, turnId, terminal: "completed", viewCursor: `v:host:${turnId}:terminal` },
+  });
+  return [
+    started(HOST_TURN_PAST),
+    item(HOST_TURN_PAST),
+    terminal(HOST_TURN_PAST),
+    started(HOST_TURN_OPEN),
+    item(HOST_TURN_OPEN),
+  ];
 }
 
 // Echo interrupt: acknowledge turn/interrupt for whatever turnId was requested
@@ -470,6 +583,7 @@ function emitFixtureMessage(recordedMessage, recorded, frame) {
   if (parityDelivery(message)) return;
   if (message.method && message.id !== undefined) receipts.add(message.id);
   send(message);
+  afterStartedHostTurn(message, frame);
   if (
     process.env.MUSE_TEST_STALE &&
     message.method === "item/completed" &&
@@ -532,6 +646,11 @@ function parityDelivery(message) {
       method: "skill/changed",
       params: { sessionId: message.params.sessionId },
     });
+  if (process.env.MUSE_TEST_HOST_TURN && message.method === "turn/completed") {
+    const terminal = process.env.MUSE_TEST_HOST_TURN;
+    const sessionId = message.params.sessionId;
+    setTimeout(() => sendHostTurn(sessionId, HOST_TURN_LIVE, terminal), 25);
+  }
   return false;
 }
 function applyTestVariants(message) {
