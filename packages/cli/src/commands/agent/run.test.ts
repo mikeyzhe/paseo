@@ -169,3 +169,110 @@ describe("runRunCommand option validation", () => {
     );
   });
 });
+
+const runDaemonAgents = new Set<string>();
+const runCreateAgent = vi.fn(async () => ({
+  id: "agent-1",
+  status: "running",
+  provider: "codex",
+  cwd: "/tmp/project",
+  title: null,
+}));
+const runFetchAgent = vi.fn(async ({ agentId }: { agentId: string }) => {
+  if (!runDaemonAgents.has(agentId)) {
+    throw new Error(`Agent not found: ${agentId}`);
+  }
+  return { agent: { id: agentId } };
+});
+const runCreateWorkspace = vi.fn(async () => ({
+  workspace: { id: "ws-1", name: "w", workspaceDirectory: "/tmp/project" },
+}));
+const runClose = vi.fn(async () => undefined);
+
+vi.mock("../../utils/client.js", () => ({
+  connectToDaemon: vi.fn(async () => ({
+    fetchAgent: runFetchAgent,
+    createAgent: runCreateAgent,
+    createWorkspace: runCreateWorkspace,
+    close: runClose,
+  })),
+  getDaemonHost: vi.fn(() => "ws://127.0.0.1:6767"),
+}));
+
+describe("runRunCommand finish notification", () => {
+  const originalAgentId = process.env.PASEO_AGENT_ID;
+  const originalWorkspaceId = process.env.PASEO_WORKSPACE_ID;
+
+  beforeEach(() => {
+    runDaemonAgents.clear();
+    runCreateAgent.mockClear();
+    runFetchAgent.mockClear();
+    runCreateWorkspace.mockClear();
+    runClose.mockClear();
+    delete process.env.PASEO_AGENT_ID;
+    delete process.env.PASEO_WORKSPACE_ID;
+  });
+
+  afterEach(() => {
+    if (originalAgentId === undefined) {
+      delete process.env.PASEO_AGENT_ID;
+    } else {
+      process.env.PASEO_AGENT_ID = originalAgentId;
+    }
+    if (originalWorkspaceId === undefined) {
+      delete process.env.PASEO_WORKSPACE_ID;
+    } else {
+      process.env.PASEO_WORKSPACE_ID = originalWorkspaceId;
+    }
+  });
+
+  async function runNoWait(options: Omit<AgentRunOptions, "daemonTarget">) {
+    return runRunCommand(
+      "do something",
+      { wait: false, provider: "codex", cwd: "/tmp/project", daemonTarget, ...options },
+      {} as never,
+    );
+  }
+
+  it("passes notifyOnFinish true when the caller resolves on this daemon", async () => {
+    process.env.PASEO_AGENT_ID = "parent-agent";
+    runDaemonAgents.add("parent-agent");
+
+    await runNoWait({});
+
+    expect(runCreateAgent).toHaveBeenCalledTimes(1);
+    expect(runCreateAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ callerAgentId: "parent-agent", notifyOnFinish: true }),
+    );
+  });
+
+  it("passes notifyOnFinish false with --no-notify", async () => {
+    process.env.PASEO_AGENT_ID = "parent-agent";
+    runDaemonAgents.add("parent-agent");
+
+    await runNoWait({ notify: false });
+
+    expect(runCreateAgent).toHaveBeenCalledTimes(1);
+    expect(runCreateAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ callerAgentId: "parent-agent", notifyOnFinish: false }),
+    );
+  });
+
+  it("passes notifyOnFinish false with no caller", async () => {
+    await runNoWait({});
+
+    expect(runCreateAgent).toHaveBeenCalledTimes(1);
+    expect(runCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ notifyOnFinish: false }));
+    expect(runCreateAgent.mock.calls[0]?.[0]?.callerAgentId).toBeUndefined();
+  });
+
+  it("passes notifyOnFinish false when PASEO_AGENT_ID belongs to another daemon", async () => {
+    process.env.PASEO_AGENT_ID = "foreign-agent";
+
+    await runNoWait({});
+
+    expect(runCreateAgent).toHaveBeenCalledTimes(1);
+    expect(runCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ notifyOnFinish: false }));
+    expect(runCreateAgent.mock.calls[0]?.[0]?.callerAgentId).toBeUndefined();
+  });
+});

@@ -469,3 +469,113 @@ test("session create with an internal config skips provider session persistence"
   expect(createAgent.mock.calls[1]?.[0]).not.toHaveProperty("internal");
   expect(createAgent.mock.calls[1]?.[2]).not.toHaveProperty("persistSession");
 });
+
+function createSessionNotifyHarness() {
+  const snapshot = {
+    id: "agent-1",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    runtimeInfo: null,
+  } as ManagedAgent;
+  const streamAgent = vi.fn(() => (async function* noop() {})());
+  const accept = vi.fn();
+  const reject = vi.fn(async () => undefined);
+  const register = vi.fn(async () => ({ accept, reject }));
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      createAgent: vi.fn(async () => snapshot),
+      getAgent: vi.fn(() => snapshot),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      reloadStalePluginSession: async () => {},
+      streamAgent,
+      waitForAgentRunStart: vi.fn(async () => undefined),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    finishSubscriptions: {
+      register,
+    } as unknown as Parameters<typeof createAgentCommand>[0]["finishSubscriptions"],
+    logger: createTestLogger(),
+    providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+  };
+  return { dependencies, register, accept, reject };
+}
+
+test("session create with a caller and notifyOnFinish registers a finish subscription", async () => {
+  const { dependencies, register, accept } = createSessionNotifyHarness();
+
+  await createAgentCommand(dependencies, {
+    kind: "session",
+    config: { provider: "codex", cwd: "/tmp/paseo-create-test" },
+    workspaceId: "ws-create-test",
+    initialPrompt: "hello from cli",
+    callerAgentId: "parent-agent",
+    notifyOnFinish: true,
+    labels: {},
+    provisionalTitle: null,
+    firstAgentContext: { attachments: [] },
+  });
+
+  expect(register).toHaveBeenCalledTimes(1);
+  expect(register).toHaveBeenCalledWith(
+    {
+      childAgentId: "agent-1",
+      callerAgentId: "parent-agent",
+      requireParentOwnership: true,
+    },
+    true,
+  );
+  expect(accept).toHaveBeenCalledTimes(1);
+});
+
+test("session create without a caller does not register a finish subscription", async () => {
+  const { dependencies, register } = createSessionNotifyHarness();
+
+  await createAgentCommand(dependencies, {
+    kind: "session",
+    config: { provider: "codex", cwd: "/tmp/paseo-create-test" },
+    workspaceId: "ws-create-test",
+    initialPrompt: "hello from cli",
+    notifyOnFinish: true,
+    labels: {},
+    provisionalTitle: null,
+    firstAgentContext: { attachments: [] },
+  });
+
+  expect(register).not.toHaveBeenCalled();
+});
+
+test("session create with notifyOnFinish false does not register a finish subscription", async () => {
+  const { dependencies, register } = createSessionNotifyHarness();
+
+  await createAgentCommand(dependencies, {
+    kind: "session",
+    config: { provider: "codex", cwd: "/tmp/paseo-create-test" },
+    workspaceId: "ws-create-test",
+    initialPrompt: "hello from cli",
+    callerAgentId: "parent-agent",
+    notifyOnFinish: false,
+    labels: {},
+    provisionalTitle: null,
+    firstAgentContext: { attachments: [] },
+  });
+
+  expect(register).not.toHaveBeenCalled();
+});
+
+test("session create with omitted notifyOnFinish keeps the legacy no-subscription behavior", async () => {
+  const { dependencies, register } = createSessionNotifyHarness();
+
+  await createAgentCommand(dependencies, {
+    kind: "session",
+    config: { provider: "codex", cwd: "/tmp/paseo-create-test" },
+    workspaceId: "ws-create-test",
+    initialPrompt: "hello from cli",
+    callerAgentId: "parent-agent",
+    labels: {},
+    provisionalTitle: null,
+    firstAgentContext: { attachments: [] },
+  });
+
+  expect(register).not.toHaveBeenCalled();
+});

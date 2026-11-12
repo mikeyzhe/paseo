@@ -191,6 +191,186 @@ test("legacy cancel_agent_request reports refusal through the activity log", asy
   ]);
 });
 
+function createSendNotifyHarness(dispatched: Promise<unknown> = new Promise(() => {})) {
+  const accept = vi.fn();
+  const reject = vi.fn(async () => undefined);
+  const register = vi.fn(async () => ({ accept, reject }));
+  const enqueued: Array<{ onDispatch?: (disposition: unknown) => void }> = [];
+  const agentMessages = {
+    enqueue: vi.fn((message: { onDispatch?: (disposition: unknown) => void }) => {
+      enqueued.push(message);
+      // A noop observer so a failing dispatch never surfaces as an unhandled
+      // rejection outside the session's own sent.catch handler.
+      dispatched.catch(() => {});
+      return { status: "queued" as const, messageId: "msg-1", dispatched };
+    }),
+    hasPending: () => false,
+    close: async () => {},
+    waitForDispatch: async () => {},
+  } as unknown as SessionOptions["agentMessages"];
+  const finishSubscriptions = {
+    register,
+  } as unknown as SessionOptions["finishSubscriptions"];
+  return { accept, reject, register, enqueued, agentMessages, finishSubscriptions };
+}
+
+test("send_agent_message_request with notifyOnFinish registers a finish subscription", async () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+  const callerId = "22222222-2222-4222-8222-222222222222";
+  const messages: SessionOutboundMessage[] = [];
+  const harness = createSendNotifyHarness();
+  const session = createSessionForTest({
+    messages,
+    agentMessages: harness.agentMessages,
+    finishSubscriptions: harness.finishSubscriptions,
+    agentManager: {
+      getAgent: vi.fn((id: string) =>
+        id === agentId || id === callerId ? { id, config: { title: "T" } } : null,
+      ),
+      getRetiredInternalAgent: vi.fn(() => null),
+    },
+  });
+
+  await session.handleMessage({
+    type: "send_agent_message_request",
+    requestId: "send-notify",
+    agentId,
+    text: "do the thing",
+    sourceAgentId: callerId,
+    notifyOnFinish: true,
+  });
+
+  expect(harness.register).toHaveBeenCalledTimes(1);
+  expect(harness.register).toHaveBeenCalledWith(
+    { childAgentId: agentId, callerAgentId: callerId },
+    true,
+  );
+  expect(harness.enqueued).toHaveLength(1);
+  expect(messages).toEqual([
+    {
+      type: "send_agent_message_response",
+      payload: {
+        requestId: "send-notify",
+        agentId,
+        accepted: true,
+        deliveryStatus: "queued",
+        error: null,
+        disposition: undefined,
+      },
+    },
+  ]);
+
+  harness.enqueued[0]!.onDispatch?.("turn_started");
+  expect(harness.accept).toHaveBeenCalledTimes(1);
+});
+
+test("send_agent_message_request without notifyOnFinish keeps the legacy no-subscription behavior", async () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+  const callerId = "22222222-2222-4222-8222-222222222222";
+  const messages: SessionOutboundMessage[] = [];
+  const harness = createSendNotifyHarness();
+  const session = createSessionForTest({
+    messages,
+    agentMessages: harness.agentMessages,
+    finishSubscriptions: harness.finishSubscriptions,
+    agentManager: {
+      getAgent: vi.fn((id: string) =>
+        id === agentId || id === callerId ? { id, config: { title: "T" } } : null,
+      ),
+      getRetiredInternalAgent: vi.fn(() => null),
+    },
+  });
+
+  await session.handleMessage({
+    type: "send_agent_message_request",
+    requestId: "send-legacy",
+    agentId,
+    text: "do the thing",
+    sourceAgentId: callerId,
+  });
+
+  expect(harness.register).not.toHaveBeenCalled();
+  expect(harness.enqueued).toHaveLength(1);
+  expect(messages).toEqual([
+    {
+      type: "send_agent_message_response",
+      payload: {
+        requestId: "send-legacy",
+        agentId,
+        accepted: true,
+        deliveryStatus: "queued",
+        error: null,
+        disposition: undefined,
+      },
+    },
+  ]);
+});
+
+test("send_agent_message_request with notifyOnFinish false does not register", async () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+  const callerId = "22222222-2222-4222-8222-222222222222";
+  const messages: SessionOutboundMessage[] = [];
+  const harness = createSendNotifyHarness();
+  const session = createSessionForTest({
+    messages,
+    agentMessages: harness.agentMessages,
+    finishSubscriptions: harness.finishSubscriptions,
+    agentManager: {
+      getAgent: vi.fn((id: string) =>
+        id === agentId || id === callerId ? { id, config: { title: "T" } } : null,
+      ),
+      getRetiredInternalAgent: vi.fn(() => null),
+    },
+  });
+
+  await session.handleMessage({
+    type: "send_agent_message_request",
+    requestId: "send-opt-out",
+    agentId,
+    text: "do the thing",
+    sourceAgentId: callerId,
+    notifyOnFinish: false,
+  });
+
+  expect(harness.register).not.toHaveBeenCalled();
+  expect(harness.enqueued).toHaveLength(1);
+});
+
+test("send_agent_message_request rejects the subscription when dispatch fails", async () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+  const callerId = "22222222-2222-4222-8222-222222222222";
+  const messages: SessionOutboundMessage[] = [];
+  const dispatchFailure = Promise.reject(new Error("dispatch failed"));
+  // Observed here so the rejection never surfaces as unhandled outside the
+  // session's own sent.catch handler; the send path still observes it.
+  dispatchFailure.catch(() => {});
+  const harness = createSendNotifyHarness(dispatchFailure);
+  const session = createSessionForTest({
+    messages,
+    agentMessages: harness.agentMessages,
+    finishSubscriptions: harness.finishSubscriptions,
+    agentManager: {
+      getAgent: vi.fn((id: string) =>
+        id === agentId || id === callerId ? { id, config: { title: "T" } } : null,
+      ),
+      getRetiredInternalAgent: vi.fn(() => null),
+    },
+  });
+
+  await session.handleMessage({
+    type: "send_agent_message_request",
+    requestId: "send-dispatch-fails",
+    agentId,
+    text: "do the thing",
+    sourceAgentId: callerId,
+    notifyOnFinish: true,
+  });
+
+  expect(harness.register).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() => expect(harness.reject).toHaveBeenCalledTimes(1));
+  expect(harness.accept).not.toHaveBeenCalled();
+});
+
 const checkoutGitMocks = vi.hoisted(() => ({
   checkoutResolvedBranch: vi.fn(),
   commitChanges: vi.fn(),
@@ -338,6 +518,8 @@ interface SessionForTestOptions {
   pluginRuntime?: SessionOptions["pluginRuntime"];
   orchestrationSkills?: SessionOptions["orchestrationSkills"];
   workspaceLabelService?: WorkspaceLabelService;
+  agentMessages?: SessionOptions["agentMessages"];
+  finishSubscriptions?: SessionOptions["finishSubscriptions"];
 }
 
 function createSessionForTest(options: SessionForTestOptions = {}): Session {
@@ -375,7 +557,8 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
   const sessionOptions: SessionOptions = {
     workspaceRuntimeStore: options.workspaceRuntimeStore ?? createWorkspaceRuntimeStore(),
     messageReceipts: createMessageReceiptsStub(),
-    agentMessages: createAgentMessageDeliveryStub(),
+    agentMessages: options.agentMessages ?? createAgentMessageDeliveryStub(),
+    finishSubscriptions: options.finishSubscriptions,
     creationService: createTestCreationService(),
     clientId: options.clientId ?? "test-client",
     onMessage: (message) => messages.push(message),

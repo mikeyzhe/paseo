@@ -2,6 +2,7 @@ import { type Command, Option } from "commander";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import { collectMultiple } from "../../utils/command-options.js";
 import { connectToDaemon } from "../../utils/client.js";
+import { resolveCallerAgentId } from "../../utils/caller-agent.js";
 import type {
   CommandOptions,
   SingleResult,
@@ -31,6 +32,7 @@ export const agentSendSchema: OutputSchema<AgentSendResult> = {
 export interface AgentSendOptions extends CommandOptions {
   behavior?: ActiveTurnBehavior;
   wait?: boolean;
+  notify?: boolean;
   image?: string[];
   prompt?: string;
   promptFile?: string;
@@ -50,7 +52,11 @@ export function addSendOptions(cmd: Command): Command {
         "Active-turn behavior (agent default: steer; otherwise: interrupt)",
       ).choices(["interrupt", "steer"]),
     )
-    .option("--no-wait", "Return immediately without waiting for completion");
+    .option("--no-wait", "Return immediately without waiting for completion")
+    .option(
+      "--no-notify",
+      "Don't notify the calling agent when this agent finishes (default: notify when run from inside an agent)",
+    );
 }
 
 /**
@@ -200,10 +206,14 @@ export async function runSendCommand(
       options.image && options.image.length > 0 ? await readImageFiles(options.image) : undefined;
 
     const sourceAgentId = process.env.PASEO_AGENT_ID?.trim() || undefined;
+    // Only a caller on THIS daemon can receive the finish callback; a foreign
+    // PASEO_AGENT_ID keeps its provenance but gets no subscription.
+    const callerAgentId = sourceAgentId ? await resolveCallerAgentId(client) : undefined;
     // Send the message
     const receipt = await client.sendAgentMessage(agentIdArg, promptInput, {
       images,
       sourceAgentId,
+      notifyOnFinish: options.notify === false ? false : callerAgentId !== undefined,
       activeTurnBehavior: options.behavior ?? (sourceAgentId ? "steer" : "interrupt"),
     });
 
