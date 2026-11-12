@@ -50,6 +50,12 @@ export interface CreateAgentFromSessionInput {
   config: AgentSessionConfig;
   workspaceId: string;
   initialPrompt?: string;
+  // CLI-managed caller: same-daemon agent that launched this run. Only set
+  // together with notifyOnFinish; session children are always parented.
+  callerAgentId?: string;
+  // Notify the caller when the created agent finishes. Defaults to false
+  // (legacy behavior) when the client omits it.
+  notifyOnFinish?: boolean;
   source?: AgentPromptSource;
   clientMessageId?: string;
   outputSchema?: Record<string, unknown>;
@@ -176,16 +182,15 @@ export async function createAgentCommand(
   if (input.kind === "mcp") {
     input.onCreated?.({ agentId: snapshot.id, createdWorktree: resolved.createdWorktree ?? null });
   }
+  const notifyOnFinish =
+    input.kind === "mcp" ? input.notifyOnFinish : (input.notifyOnFinish ?? false);
   const notification =
-    input.kind === "mcp" &&
-    input.notifyOnFinish &&
-    input.callerAgentId &&
-    resolved.prompt !== undefined
+    notifyOnFinish && input.callerAgentId && resolved.prompt !== undefined
       ? await requireFinishSubscriptions(dependencies).register(
           {
             childAgentId: snapshot.id,
             callerAgentId: input.callerAgentId,
-            requireParentOwnership: !(input.detached ?? false),
+            requireParentOwnership: input.kind === "mcp" ? !(input.detached ?? false) : true,
           },
           true,
         )

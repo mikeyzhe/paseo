@@ -1,5 +1,9 @@
 import { type WorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { AgentMessageDelivery } from "./agent/agent-messages/index.js";
+import type {
+  FinishRegistration,
+  FinishSubscriptions,
+} from "./agent/finish-subscriptions/index.js";
 import { AgentDirectory } from "./agent/directory.js";
 import { ConnectedHostSession } from "./connected-hosts/index.js";
 import type { ConnectedHosts } from "./connected-hosts/index.js";
@@ -470,6 +474,7 @@ export interface SessionOptions {
   agentStorage: AgentStorage;
   messageReceipts: Pick<MessageReceipts, "send">;
   agentMessages: AgentMessageDelivery;
+  finishSubscriptions?: FinishSubscriptions;
   creationService: Pick<CreationService, "create" | "subscribe">;
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
@@ -850,6 +855,7 @@ export class Session {
   private readonly workspaceScripts: WorkspaceScriptsService;
   private readonly messageReceipts: Pick<MessageReceipts, "send">;
   private readonly agentMessages: AgentMessageDelivery;
+  private readonly finishSubscriptions?: FinishSubscriptions;
   private readonly createAgentLifecycleDispatch: CreateAgentLifecycleDispatch;
   private readonly creationService: Pick<CreationService, "create" | "subscribe">;
 
@@ -936,6 +942,7 @@ export class Session {
     this.paseoHome = paseoHome;
     this.messageReceipts = options.messageReceipts;
     this.agentMessages = options.agentMessages;
+    this.finishSubscriptions = options.finishSubscriptions;
     this.creationService = options.creationService;
     this.projectIcons = new ProjectIconReader(paseoHome);
     this.worktreesRoot = worktreesRoot;
@@ -4525,6 +4532,7 @@ export class Session {
         {
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
+          finishSubscriptions: this.finishSubscriptions,
           logger: this.sessionLogger,
           paseoHome: this.paseoHome,
           worktreesRoot: this.worktreesRoot,
@@ -4540,6 +4548,8 @@ export class Session {
           config: resolvedIntent.config,
           workspaceId: resolvedIntent.intent.workspaceId,
           initialPrompt,
+          callerAgentId: msg.callerAgentId,
+          notifyOnFinish: msg.notifyOnFinish,
           source: msg.callerAgentId
             ? { kind: "agent-message", agentId: msg.callerAgentId }
             : undefined,
@@ -8381,8 +8391,31 @@ export class Session {
       });
       let deliveryStatus: "queued" | undefined;
       let disposition: PromptDispatchDisposition | undefined;
+      // Same callback the MCP send_agent_prompt path gives agent callers. An
+      // omitted notifyOnFinish keeps the legacy behavior (no subscription).
+      const notifying = msg.notifyOnFinish === true && msg.sourceAgentId !== undefined;
+      let notification: FinishRegistration | undefined;
+      const rejectNotification = () => {
+        void notification
+          ?.reject()
+          .catch((error) =>
+            this.sessionLogger.error(
+              { err: error, agentId },
+              "Failed to remove rejected finish subscription",
+            ),
+          );
+      };
       const send = async () => {
         if (msg.sourceAgentId) {
+          if (notifying) {
+            if (!this.finishSubscriptions) {
+              throw new Error("Finish subscriptions are not configured");
+            }
+            notification = await this.finishSubscriptions.register(
+              { childAgentId: agentId, callerAgentId: msg.sourceAgentId },
+              true,
+            );
+          }
           const receipt = this.agentMessages.enqueue({
             recipientId: agentId,
             messageId: msg.messageId,
@@ -8398,6 +8431,7 @@ export class Session {
             activeTurnBehavior: msg.activeTurnBehavior ?? "steer",
             sessionMode: msg.sessionMode,
             clearPendingPermissions: true,
+            onDispatch: () => notification?.accept(),
           });
           deliveryStatus = "queued";
           queued();
@@ -8443,6 +8477,9 @@ export class Session {
           })
         : send();
       void sent.catch((error) => {
+        // A rejected dispatch preserves any preceding registration, mirroring
+        // the MCP send_agent_prompt path.
+        rejectNotification();
         if (deliveryStatus === "queued") {
           this.handleAgentRunError(agentId, error, "Failed to dispatch queued agent message");
         }

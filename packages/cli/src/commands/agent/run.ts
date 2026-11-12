@@ -28,6 +28,10 @@ export function addRunOptions(cmd: Command): Command {
       .description("Create and start an agent with a task")
       .argument("<prompt>", "The task/prompt for the agent")
       .option("--no-wait", "Return immediately without waiting for completion")
+      .option(
+        "--no-notify",
+        "Don't notify the calling agent when this agent finishes (default: notify when run from inside an agent)",
+      )
       // COMPAT(backgroundRunFlag): --background was the documented spelling of
       // --no-wait. Added in v0.2.0; remove after 2027-04-01.
       .addOption(new Option("-d, --background", "Legacy alias for --no-wait").hideHelp())
@@ -117,6 +121,7 @@ export interface AgentRunOptions extends CommandOptions {
   wait?: boolean;
   background?: boolean;
   detach?: boolean;
+  notify?: boolean;
   title?: string;
   name?: string;
   provider?: string;
@@ -625,6 +630,7 @@ export async function runRunCommand(
     const requestEnv = Object.keys(env).length > 0 ? env : undefined;
 
     const callerAgentId = await resolveCallerAgentId(client);
+    const notifyOnFinish = options.notify === false ? false : callerAgentId !== undefined;
     const workspace = await resolveRunWorkspace(client, options, cwd, callerAgentId);
     const workspaceId = workspace.id;
     const runCwd = workspace.cwd;
@@ -639,6 +645,7 @@ export async function runRunCommand(
             cwd: runCwd,
             workspaceId,
             callerAgentId,
+            notifyOnFinish,
             title: resolvedTitle,
             modeId: options.mode,
             model: resolvedProviderModel.model,
@@ -710,6 +717,7 @@ export async function runRunCommand(
       cwd: runCwd,
       workspaceId,
       callerAgentId,
+      notifyOnFinish,
       title: resolvedTitle,
       modeId: options.mode,
       model: resolvedProviderModel.model,

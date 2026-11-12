@@ -3657,6 +3657,57 @@ test("sends create_agent_request with workspace and caller identity", async () =
   await expect(createPromise).rejects.toThrow("compat test sentinel");
 });
 
+test("sends notifyOnFinish in create_agent_request when the caller opts in", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen({ features: { agentRequestReceipts: true } });
+  await connectPromise;
+
+  const createPromise = client.createAgent({
+    idempotencyKey: "notify-creation",
+    provider: "codex",
+    cwd: "/tmp/project",
+    workspaceId: "ws-notify",
+    callerAgentId: "parent-agent",
+    notifyOnFinish: true,
+  });
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toEqual(
+    expect.objectContaining({
+      type: "create_agent_request",
+      callerAgentId: "parent-agent",
+      notifyOnFinish: true,
+    }),
+  );
+  expect(request.config).not.toHaveProperty("notifyOnFinish");
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "status",
+      payload: {
+        status: "agent_create_failed",
+        requestId: request.requestId,
+        error: "notify test sentinel",
+      },
+    }),
+  );
+
+  await expect(createPromise).rejects.toThrow("notify test sentinel");
+});
+
 test("sends internal in create_agent_request when the host advertises internal agents", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -8028,6 +8079,43 @@ test.each([false, true])(
     await send;
   },
 );
+
+test("sends notifyOnFinish in send_agent_message_request when the caller opts in", async () => {
+  const transport = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "notify_send_unit_test",
+    transportFactory: () => transport.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connecting = client.connect();
+  transport.triggerOpen({ features: { agentMessageProvenance: true } });
+  await connecting;
+
+  const send = client.sendAgentMessage("recipient", "review", {
+    sourceAgentId: "parent-agent",
+    notifyOnFinish: true,
+  });
+  const request = parseSentFrame(transport.sent[0]);
+  expect(request).toMatchObject({
+    type: "send_agent_message_request",
+    sourceAgentId: "parent-agent",
+    notifyOnFinish: true,
+  });
+  transport.triggerMessage(
+    wrapSessionMessage({
+      type: "send_agent_message_response",
+      payload: {
+        requestId: request.requestId,
+        agentId: "recipient",
+        accepted: true,
+        error: null,
+      },
+    }),
+  );
+  await send;
+});
 
 test("measures an outbound message in UTF-8 bytes against the daemon's message limit", async () => {
   const mock = createMockTransport();

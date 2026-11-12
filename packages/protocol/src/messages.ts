@@ -1435,6 +1435,10 @@ export const SendAgentMessageRequestSchema = z.object({
   /** Opaque sender identity for agent-originated prompts. */
   sourceAgentId: z.string().min(1).optional(),
   sourceAgentServerId: z.string().min(1).optional(),
+  // Finish notification for the source agent. Omitted keeps the legacy
+  // behavior (no subscription); the CLI sends true when its caller resolves
+  // on this daemon. Old clients omit it and are unaffected.
+  notifyOnFinish: z.boolean().optional(),
   sessionMode: z.string().optional(),
   messageId: z.string().optional(), // Client-provided ID for deduplication
   activeTurnBehavior: ActiveTurnBehaviorSchema.optional(),
@@ -1787,6 +1791,10 @@ export const CreateAgentRequestMessageSchema = z.object({
   // Optional caller context lets managed CLI invocations use the same daemon-owned
   // workspace and parentage policy as agent-scoped MCP creation.
   callerAgentId: z.string().optional(),
+  // Finish notification for the caller agent. Omitted keeps the legacy
+  // behavior (no subscription); the CLI sends true when its caller resolves
+  // on this daemon. Old clients omit it and are unaffected.
+  notifyOnFinish: z.boolean().optional(),
   worktreeName: z.string().optional(),
   initialPrompt: z.string().optional(),
   clientMessageId: z.string().optional(),
