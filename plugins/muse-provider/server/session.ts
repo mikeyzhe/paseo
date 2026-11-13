@@ -698,7 +698,7 @@ export class Session {
         });
         break;
       case "skill/changed":
-        await this.live().commands.refresh();
+        await this.refreshCommandsBestEffort();
         break;
       case "item/started":
       case "item/updated":
@@ -759,6 +759,19 @@ export class Session {
         });
         break;
       }
+    }
+  }
+  // Cosmetic catalog refresh, same best-effort rule as child
+  // drill-down reads: a slow or failed skill/list must not kill the parent
+  // session. The next skill/changed retries naturally.
+  private async refreshCommandsBestEffort(): Promise<void> {
+    try {
+      await this.live().commands.refresh();
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 120);
+      process.stderr.write(
+        `[muse-provider] skill/changed refresh failed: ${message} — catalog unchanged\n`,
+      );
     }
   }
   private startTurn(input: unknown): void {

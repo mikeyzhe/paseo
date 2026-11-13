@@ -2293,6 +2293,175 @@ test("interrupt with no turnId targets an adopted host turn running beside ours"
   ).toEqual([]);
 });
 
+test("a hung child session/read never fails the parent and a later prompt still dispatches", async () => {
+  // 2026-11-12 live bug (FT3:refactor 1, Muse ebc0d86c): a slow child
+  // session/read timed out at the default 10s and escaped into
+  // session.runtime_failed, killing the parent agent with its workflow.
+  // Child drill-down is best-effort: the read gets 60s, each timeout logs
+  // one line, the parent turn completes, and the session stays alive.
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const h = await harness("subagent", {
+    MUSE_TEST_CHILD: "dedicated",
+    MUSE_TEST_CHILD_READ_FAULT: "hang",
+  });
+  await h.open();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  await h.prompt();
+  for (let count = 0; count < 200; count++) {
+    if ((await h.recorded()).some((frame) => frame.method === "session/read")) break;
+    await delay(10);
+  }
+  // The old 10s default must NOT fire: still one outstanding read, no failure.
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  expect((await h.recorded()).filter((frame) => frame.method === "session/read")).toHaveLength(1);
+  // Both child items (spawn started rev1, completed rev2) attempt the read;
+  // each times out at 60s and the notification chain moves on.
+  for (let attempts = 0; attempts < 3; attempts++) {
+    await vi.advanceTimersByTimeAsync(60000);
+    for (let count = 0; count < 200; count++) {
+      if (h.events.some((event) => event.type === "session.turn" && event.state === "completed"))
+        break;
+      await delay(10);
+    }
+    if (h.events.some((event) => event.type === "session.turn" && event.state === "completed"))
+      break;
+  }
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  expect(
+    h.events.filter(
+      (event) => event.type === "session.opened" && event.sessionId === "fixture-child",
+    ),
+  ).toEqual([]);
+  expect((await h.recorded()).filter((frame) => frame.method === "session/read")).toHaveLength(2);
+  const lines = stderr.mock.calls
+    .map((call) => String(call[0]))
+    .filter((line) => line.includes("child fixture-child"));
+  expect(lines).toHaveLength(2);
+  for (const line of lines)
+    expect(line).toMatch(
+      /^\[muse-provider\] child fixture-child: session\/read timeout: Muse session\/read timed out — retrying on next update\n$/,
+    );
+  // The parent session is still alive: a later prompt dispatches (the
+  // single-turn fixture answers the second turn/start with unknownMethod,
+  // which surfaces as a failed prompt_result, not a dead session).
+  const from = await h.prompt();
+  expect(await h.wait((event) => event.type === "session.prompt_result", from)).toMatchObject({
+    result: { type: "failed" },
+  });
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+});
+
+test("a child session/read failure retries on the next item and opens exactly once", async () => {
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const h = await harness("subagent", {
+    MUSE_TEST_CHILD: "dedicated",
+    MUSE_TEST_CHILD_READ_FAULT: "fail-once",
+  });
+  await h.open();
+  await h.prompt();
+  expect(
+    await h.wait((event) => event.type === "session.opened" && event.sessionId === "fixture-child"),
+  ).toMatchObject({ parentSessionId: "paseo-session", restoration: "parent" });
+  expect(
+    await h.wait(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.sessionId === "fixture-child" &&
+        event.item.type === "assistant_message",
+    ),
+  ).toMatchObject({ item: { text: "SUBAGENT_PHASE0_OK" } });
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  expect(
+    h.events.filter(
+      (event) => event.type === "session.opened" && event.sessionId === "fixture-child",
+    ),
+  ).toHaveLength(1);
+  expect((await h.recorded()).filter((frame) => frame.method === "session/read")).toHaveLength(2);
+  expect(
+    stderr.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("child fixture-child")),
+  ).toEqual([
+    expect.stringMatching(
+      /^\[muse-provider\] child fixture-child: session\/read internal: boom — retrying on next update\n$/,
+    ),
+  ]);
+});
+
+test("a child view/page failure resumes from the saved cursor without duplicating items", async () => {
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const h = await harness("subagent", {
+    MUSE_TEST_CHILD: "dedicated",
+    MUSE_TEST_CHILD_PAGE_FAULT: "split-fail-second",
+  });
+  await h.open();
+  await h.prompt();
+  expect(
+    await h.wait(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.sessionId === "fixture-child" &&
+        event.item.type === "assistant_message",
+    ),
+  ).toMatchObject({ item: { text: "SUBAGENT_PHASE0_OK" } });
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  const pages = (await h.recorded()).filter(
+    (frame) => frame.method === "view/page" && frame.params.sessionId === "fixture-child",
+  );
+  expect(pages.map((frame) => frame.params.cursor)).toEqual([
+    undefined,
+    "fixture-child-cursor-1",
+    "fixture-child-cursor-1",
+  ]);
+  expect(
+    h.events.filter(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.sessionId === "fixture-child" &&
+        event.item.type === "assistant_message",
+    ),
+  ).toHaveLength(1);
+  expect(
+    h.events.filter(
+      (event) => event.type === "session.opened" && event.sessionId === "fixture-child",
+    ),
+  ).toHaveLength(1);
+  expect(
+    stderr.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("child fixture-child")),
+  ).toEqual([
+    expect.stringMatching(
+      /^\[muse-provider\] child fixture-child: view\/page internal: boom — resuming from saved cursor\n$/,
+    ),
+  ]);
+});
+
+test("a failed skill/changed catalog refresh keeps the parent session alive", async () => {
+  // Same best-effort rule as child drill-down reads: the command catalog
+  // refresh is cosmetic, so a failed skill/list inside the notification
+  // chain must log one line instead of killing the parent.
+  const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const h = await harness("skill", {
+    MUSE_TEST_SKILLS_CHANGED: "1",
+    MUSE_TEST_SKILL_LIST_FAULT: "after-open",
+  });
+  await h.open();
+  await h.prompt();
+  await h.wait((event) => event.type === "session.turn" && event.state === "completed");
+  expect((await h.recorded()).filter((frame) => frame.method === "skill/list")).toHaveLength(2);
+  expect(h.events.filter((event) => event.type === "session.runtime_failed")).toEqual([]);
+  expect(
+    stderr.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("skill/changed refresh failed")),
+  ).toEqual(["[muse-provider] skill/changed refresh failed: boom — catalog unchanged\n"]);
+});
+
 test("readOutput internal errors render the edit without a diff and complete the turn", async () => {
   // Flipped 2026-10-06: the edit-diff fetch is display-only, so even an
   // internal readOutput error must render the edit without a diff and

@@ -30,6 +30,9 @@ const catalogRows = readFixture("catalog-controls");
 const replacements = new Map();
 const counts = new Map();
 const receipts = new Set();
+let childReadCalls = 0;
+let childPageCalls = 0;
+let skillListCalls = 0;
 const lines = createInterface({ input: process.stdin });
 lines.on("line", receive);
 function receive(line) {
@@ -277,6 +280,7 @@ function parityResponse(frame) {
   if (workflowResponse(frame)) return true;
   if (viewPageResponse(frame)) return true;
   if (frame.method === "session/read") {
+    if (childReadFaultResponse(frame)) return true;
     const result = responseFor(readFixture("phase3-child-read"), "session/read");
     result.session.sessionId = frame.params.sessionId;
     respond(frame, result);
@@ -334,8 +338,27 @@ function parityResponse(frame) {
   if (skillResponse(frame)) return true;
   return false;
 }
+function childReadFaultResponse(frame) {
+  const fault = process.env.MUSE_TEST_CHILD_READ_FAULT;
+  if (!fault) return false;
+  childReadCalls++;
+  // "hang" never answers: the provider's per-request timeout is the only way out.
+  if (fault === "hang") return true;
+  if (fault === "fail-once" && childReadCalls === 1) {
+    rpcError(frame, -32001, "internal", "boom");
+    return true;
+  }
+  return false;
+}
+
 function skillResponse(frame) {
   if (frame.method === "skill/list") {
+    skillListCalls++;
+    // Fail only post-open refreshes (e.g. from skill/changed): open itself must succeed.
+    if (process.env.MUSE_TEST_SKILL_LIST_FAULT === "after-open" && skillListCalls > 1) {
+      rpcError(frame, -32001, "internal", "boom");
+      return true;
+    }
     const skillRows =
       scenario.startsWith("phase3-") && rows.some((row) => row.msg.method === "skill/list")
         ? rows
@@ -364,6 +387,7 @@ function workflowResponse(frame) {
 
 function viewPageResponse(frame) {
   if (frame.method !== "view/page") return false;
+  if (childPageFaultResponse(frame)) return true;
   let result;
   if (process.env.MUSE_TEST_HOST_TURN_BACKFILL) {
     result = { events: hostBackfillEvents(frame.params.sessionId), nextCursor: null };
@@ -395,6 +419,27 @@ function viewPageResponse(frame) {
     for (const event of result.events) event.params.sessionId = frame.params.sessionId;
   }
   respond(frame, result);
+  return true;
+}
+
+function childPageFaultResponse(frame) {
+  if (
+    process.env.MUSE_TEST_CHILD_PAGE_FAULT !== "split-fail-second" ||
+    frame.params.sessionId !== "fixture-child"
+  )
+    return false;
+  childPageCalls++;
+  // Split the recorded child transcript across two pages and fail the second
+  // fetch: the provider must keep its cursor and resume there on retry.
+  if (childPageCalls === 2) {
+    rpcError(frame, -32001, "internal", "boom");
+    return true;
+  }
+  const full = replace(responseFor(readFixture("phase3-child-read"), "view/page"));
+  const first = childPageCalls === 1;
+  const events = first ? full.events.slice(0, 3) : full.events.slice(3);
+  for (const event of events) event.params.sessionId = frame.params.sessionId;
+  respond(frame, { events, nextCursor: first ? "fixture-child-cursor-1" : null });
   return true;
 }
 
